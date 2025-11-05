@@ -1,4 +1,4 @@
-# ZZZ Mod Manager
+# Syleaf Mod Manager for ZZZ
 
 Aplicación de escritorio (Electron + React) para instalar y administrar mods de Zenless Zone Zero sin complicaciones.
 

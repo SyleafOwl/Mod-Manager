@@ -1,0 +1,92 @@
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: grid; place-items: center; z-index: 100; }
+.modal { width: 640px; max-width: calc(100vw - 40px); background: var(--panel); border: 1px solid #232735; border-radius: var(--radius); overflow: hidden; }
+.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid #232735; }
+.modal-title { font-weight: 700; }
+.modal-body { padding: 12px; display: grid; gap: 12px; }
+.field-row { display: grid; grid-template-columns: 150px 1fr auto; gap: 8px; align-items: center; }
+.field-row .label { color: var(--muted); }
+.field-row .path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.modal .icon { background: transparent; font-size: 18px; padding: 4px 8px; }
+:root {
+  --bg: #0f1115;
+  --panel: #151922;
+  --muted: #9aa3b2;
+  --text: #e6e9ef;
+  --accent: #6aa1ff;
+  --danger: #ff6a6a;
+  --radius: 10px;
+}
+
+body {
+  background: radial-gradient(1200px 600px at 10% 10%, #1b2132, transparent),
+              radial-gradient(1000px 500px at 90% 20%, #211b32, transparent),
+              var(--bg);
+}
+
+.layout {
+  display: grid;
+  grid-template-rows: 56px 1fr;
+  height: 100vh;
+}
+
+.layout-2 {
+  grid-template-columns: 1fr 380px; /* izquierda: personajes (flexible), derecha: mods */
+  grid-template-areas: "header header" "characters mods";
+}
+
+.header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: rgba(0,0,0,0.3);
+  border-bottom: 1px solid #232735;
+}
+.header .title { font-weight: 700; letter-spacing: .5px; }
+.header .spacer { flex: 1; }
+.header .root { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+.header .path { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+
+.update-wrapper { position: relative; margin-left: 8px; }
+.update-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid #232735;
+  border-radius: var(--radius);
+  z-index: 10;
+}
+
+.mods-panel { grid-area: mods; padding: 12px; border-left: 1px solid #232735; overflow: auto; }
+.panel-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.panel-header h2, .panel-header h3 { margin: 0; }
+
+.characters-panel { grid-area: characters; padding: 16px; overflow: auto; }
+.characters-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.char-card { background: var(--panel); border: 1px solid #232735; border-radius: var(--radius); padding: 12px; display: grid; gap: 8px; cursor: pointer; justify-items: center; }
+.char-card:hover { border-color: #2b76ff66; }
+.char-card.active { outline: 2px solid var(--accent); }
+.char-avatar { width: 56px; height: 56px; border-radius: 50%; background: #0e1320; display: grid; place-items: center; font-weight: 700; }
+.char-name { font-weight: 600; }
+
+.right-panel { display: none; }
+
+.mods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.mod-card { background: var(--panel); border: 1px solid #232735; border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+.mod-thumb { height: 160px; background: #0e1320; display: grid; place-items: center; cursor: pointer; }
+.mod-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.placeholder { color: var(--muted); font-size: 12px; }
+.mod-info { padding: 10px; }
+.mod-name { font-weight: 600; }
+.muted { color: var(--muted); font-size: 12px; }
+.mod-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 10px; }
+.mod-actions button { padding: 8px; font-size: 12px; }
+.mod-actions .danger { background: #2a1414; border-color: #402020; color: #ffacac; }
+
+.empty, .empty-hint { color: var(--muted); display: grid; place-items: center; height: 100%; }
+.center { display: grid; place-items: center; gap: 16px; }

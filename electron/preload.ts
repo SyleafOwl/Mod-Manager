@@ -4,11 +4,13 @@ import { ipcRenderer, contextBridge } from 'electron'
 contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setModsRoot: (root: string) => ipcRenderer.invoke('settings:setModsRoot', root),
+  setImagesRoot: (root: string) => ipcRenderer.invoke('settings:setImagesRoot', root),
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
   selectArchive: () => ipcRenderer.invoke('dialog:selectArchive'),
 
   listCharacters: () => ipcRenderer.invoke('characters:list'),
   addCharacter: (name: string) => ipcRenderer.invoke('characters:add', name),
+  normalizeCharacterNames: () => ipcRenderer.invoke('characters:normalizeNames'),
 
   listMods: (character: string) => ipcRenderer.invoke('mods:list', character),
   addModFromArchive: (character: string, archivePath: string, modName: string, meta?: any) => ipcRenderer.invoke('mods:addFromArchive', character, archivePath, modName, meta),
@@ -17,4 +19,9 @@ contextBridge.exposeInMainWorld('api', {
   openModPage: (character: string, modName: string) => ipcRenderer.invoke('mods:openPage', character, modName),
   openFolder: (character?: string, modName?: string) => ipcRenderer.invoke('mods:openFolder', character, modName),
   updateFromUrl: (character: string, modName: string) => ipcRenderer.invoke('mods:updateFromUrl', character, modName),
+  onFsChanged: (cb: (payload: any) => void) => {
+    const handler = (_e: any, payload: any) => cb(payload)
+    ipcRenderer.on('fs-changed', handler)
+    return () => ipcRenderer.off('fs-changed', handler)
+  },
 })

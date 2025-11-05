@@ -33,10 +33,15 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+let watcher: fs.FSWatcher | null = null
 
 function createWindow() {
   win = new BrowserWindow({
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    width: 1400,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 700,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
     },
@@ -75,12 +80,19 @@ app.on('activate', () => {
 
 app.whenReady().then(createWindow)
 
+// Start FS watcher when modsRoot exists
+app.whenReady().then(async () => {
+  const { modsRoot } = await readSettings()
+  if (modsRoot) setupWatcher(modsRoot)
+})
+
 // --------------------------- Helpers ---------------------------
 const userDataDir = () => app.getPath('userData')
 const settingsPath = () => path.join(userDataDir(), 'settings.json')
 
 type Settings = {
   modsRoot?: string
+  imagesRoot?: string
 }
 
 async function readSettings(): Promise<Settings> {
@@ -124,6 +136,23 @@ async function extractArchive(archivePath: string, destDir: string) {
     child.on('error', reject)
     child.on('close', (code) => (code === 0 ? resolve() : reject(new Error('7zip exit ' + code))))
   })
+}
+
+function setupWatcher(root: string) {
+  try { watcher?.close() } catch {}
+  try {
+    watcher = fs.watch(root, { recursive: true }, (() => {
+      let t: NodeJS.Timeout | null = null
+      return (_event, _file) => {
+        if (t) clearTimeout(t)
+        t = setTimeout(() => {
+          win?.webContents.send('fs-changed', { root })
+        }, 500)
+      }
+    })())
+  } catch (e) {
+    // ignore watch errors (e.g., unavailable recursive on some fs)
+  }
 }
 
 // Download a file to a temp path
@@ -207,6 +236,14 @@ ipcMain.handle('settings:setModsRoot', async (_e, root: string) => {
   const s = await readSettings()
   s.modsRoot = root
   await writeSettings(s)
+  setupWatcher(root)
+  return s
+})
+
+ipcMain.handle('settings:setImagesRoot', async (_e, root: string) => {
+  const s = await readSettings()
+  s.imagesRoot = root
+  await writeSettings(s)
   return s
 })
 
@@ -241,6 +278,52 @@ ipcMain.handle('characters:add', async (_e, name: string) => {
   const dir = characterDir(modsRoot, name)
   await fsp.mkdir(dir, { recursive: true })
   return name
+})
+
+ipcMain.handle('characters:normalizeNames', async () => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  const entries = await fsp.readdir(modsRoot)
+  const result: { changed: Array<{ from: string, to: string }>, skipped: string[] } = { changed: [], skipped: [] }
+
+  function normalize(n: string) {
+    const trimmed = n.trim()
+    if (!trimmed) return n
+    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase()
+  }
+
+  for (const name of entries) {
+    const full = path.join(modsRoot, name)
+    if (!isDirectory(full)) continue
+    const targetName = normalize(name)
+    if (targetName === name) continue
+    const target = path.join(modsRoot, targetName)
+
+    try {
+      // Handle case-insensitive rename on Windows by renaming to a temp name first if needed
+      const sameCaseOnly = name.toLowerCase() === targetName.toLowerCase()
+      if (sameCaseOnly) {
+        const temp = path.join(modsRoot, `${name}__tmp__${Date.now()}`)
+        await fsp.rename(full, temp)
+        await fsp.rename(temp, target)
+      } else {
+        // If target exists, skip
+        try {
+          await fsp.access(target)
+          result.skipped.push(name)
+          continue
+        } catch {}
+        await fsp.rename(full, target)
+      }
+      result.changed.push({ from: name, to: targetName })
+    } catch {
+      result.skipped.push(name)
+    }
+  }
+
+  // Notify renderer to refresh
+  win?.webContents.send('fs-changed', { root: modsRoot })
+  return result
 })
 
 ipcMain.handle('mods:list', async (_e, character: string) => {
