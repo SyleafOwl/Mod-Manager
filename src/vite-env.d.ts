@@ -42,7 +42,13 @@ declare global {
 
 			listMods(character: string): Promise<ModItem[]>
 			addModFromArchive(character: string, archivePath: string, modName: string, meta?: Partial<ModMeta>): Promise<boolean>
+			copyArchiveToModFolder(character: string, archivePath: string): Promise<{ modName: string; fileName: string; dir: string }>
 			saveModMetadata(character: string, modName: string, meta: Partial<ModMeta>): Promise<ModMeta>
+			saveModImageFromDataUrl(character: string, modName: string, dataUrl: string): Promise<string>
+			saveModImageFromUrl(character: string, modName: string, url: string): Promise<string>
+			addModEntryToDatabase(character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string; dataUrl?: string }): Promise<{ index: number; imageFile?: string }>
+			getModEntryFromDatabase(character: string, modName: string): Promise<{ pageUrl?: string; imageUrl?: string; imageFile?: string } | null>
+			updateModEntryInDatabase(character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string }): Promise<boolean>
 			deleteMod(character: string, modName: string): Promise<boolean>
 			openModPage(character: string, modName: string): Promise<boolean>
 			openFolder(character?: string, modName?: string): Promise<boolean>

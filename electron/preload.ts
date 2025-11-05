@@ -17,7 +17,13 @@ contextBridge.exposeInMainWorld('api', {
 
   listMods: (character: string) => ipcRenderer.invoke('mods:list', character),
   addModFromArchive: (character: string, archivePath: string, modName: string, meta?: any) => ipcRenderer.invoke('mods:addFromArchive', character, archivePath, modName, meta),
+  copyArchiveToModFolder: (character: string, archivePath: string) => ipcRenderer.invoke('mods:copyArchiveToModFolder', character, archivePath),
   saveModMetadata: (character: string, modName: string, meta: any) => ipcRenderer.invoke('mods:saveMetadata', character, modName, meta),
+  saveModImageFromDataUrl: (character: string, modName: string, dataUrl: string) => ipcRenderer.invoke('mods:saveImageFromDataUrl', character, modName, dataUrl),
+  saveModImageFromUrl: (character: string, modName: string, url: string) => ipcRenderer.invoke('mods:saveImageFromUrl', character, modName, url),
+  addModEntryToDatabase: (character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string; dataUrl?: string }) => ipcRenderer.invoke('database:addModEntry', character, modName, payload),
+  getModEntryFromDatabase: (character: string, modName: string) => ipcRenderer.invoke('database:getModEntry', character, modName),
+  updateModEntryInDatabase: (character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string }) => ipcRenderer.invoke('database:updateModEntry', character, modName, payload),
   deleteMod: (character: string, modName: string) => ipcRenderer.invoke('mods:delete', character, modName),
   openModPage: (character: string, modName: string) => ipcRenderer.invoke('mods:openPage', character, modName),
   openFolder: (character?: string, modName?: string) => ipcRenderer.invoke('mods:openFolder', character, modName),

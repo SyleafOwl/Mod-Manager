@@ -593,6 +593,199 @@ ipcMain.handle('mods:addFromArchive', async (_e, character: string, archivePath:
   return true
 })
 
+function uniqueModName(root: string, character: string, base: string) {
+  let name = base
+  let i = 2
+  while (true) {
+    const dir = modDir(root, character, name)
+    if (!fs.existsSync(dir)) return name
+    name = `${base} (${i++})`
+  }
+}
+
+ipcMain.handle('mods:copyArchiveToModFolder', async (_e, character: string, archivePath: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  if (!character?.trim()) throw new Error('Character required')
+  if (!archivePath) throw new Error('Archive required')
+  const originalName = path.basename(archivePath)
+  const base = originalName.replace(/\.(zip|7z|rar)$/i, '')
+  const modName = uniqueModName(modsRoot, character, base)
+  const mdir = modDir(modsRoot, character, modName)
+  await fsp.mkdir(mdir, { recursive: true })
+  const dest = path.join(mdir, originalName)
+  await fsp.copyFile(archivePath, dest)
+  return { modName, fileName: originalName, dir: mdir }
+})
+
+ipcMain.handle('mods:saveImageFromDataUrl', async (_e, character: string, modName: string, dataUrl: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  const mdir = modDir(modsRoot, character, modName)
+  await fsp.mkdir(mdir, { recursive: true })
+  const m = /^data:(.+?);base64,(.*)$/.exec(dataUrl)
+  if (!m) throw new Error('Unsupported data URL')
+  const mime = m[1]
+  const b64 = m[2]
+  const buf = Buffer.from(b64, 'base64')
+  let ext = '.png'
+  if (mime.includes('jpeg')) ext = '.jpg'
+  else if (mime.includes('webp')) ext = '.webp'
+  else if (mime.includes('gif')) ext = '.gif'
+  const fileName = `preview${ext}`
+  await fsp.writeFile(path.join(mdir, fileName), buf)
+  return fileName
+})
+
+ipcMain.handle('mods:saveImageFromUrl', async (_e, character: string, modName: string, imageUrl: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  const mdir = modDir(modsRoot, character, modName)
+  await fsp.mkdir(mdir, { recursive: true })
+  // Download buffer
+  const tmp = await downloadToTemp(imageUrl)
+  let urlExt = '.png'
+  try {
+    const u = new URL(imageUrl)
+    const e = path.extname(u.pathname).toLowerCase()
+    if (['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(e)) urlExt = e
+  } catch {}
+  const fileName = `preview${urlExt}`
+  await fsp.copyFile(tmp, path.join(mdir, fileName))
+  try { await fsp.unlink(tmp) } catch {}
+  return fileName
+})
+
+// Add a mod entry into the character's DataBase JSON and optionally save an image as <Character>MOD<N>.* inside the images folder
+ipcMain.handle('database:addModEntry', async (_e, character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string; dataUrl?: string }) => {
+  const { imagesRoot } = await readSettings()
+  if (!imagesRoot) throw new Error('Images root not set')
+  if (!character?.trim()) throw new Error('Character required')
+  const cdir = path.join(imagesRoot, character)
+  ensureDirSync(cdir)
+
+  // Read existing JSON
+  const txtPath = path.join(cdir, `${character}.txt`)
+  let json: any = {}
+  try {
+    const raw = await fsp.readFile(txtPath, 'utf-8')
+    try { json = JSON.parse(raw) } catch { json = { url: String(raw).trim() || undefined } }
+  } catch {}
+  if (!json || typeof json !== 'object') json = {}
+  if (!Array.isArray(json.mods)) json.mods = []
+
+  // Determine next mod index
+  let nextIndex = json.mods.length + 1
+  try {
+    const files = await fsp.readdir(cdir)
+    const re = new RegExp(`^${character}MOD(\\d+)\\.(png|jpe?g|webp|gif)$`, 'i')
+    let max = 0
+    for (const f of files) {
+      const m = re.exec(f)
+      if (m) {
+        const n = parseInt(m[1], 10)
+        if (n > max) max = n
+      }
+    }
+    nextIndex = Math.max(nextIndex, max + 1)
+  } catch {}
+
+  // Save image file if provided
+  let imageFile: string | undefined
+  if (payload?.dataUrl || payload?.imageUrl) {
+    let buf: Buffer | null = null
+    let ext = '.png'
+    if (payload.dataUrl) {
+      const m = /^data:(.+?);base64,(.*)$/.exec(payload.dataUrl)
+      if (!m) throw new Error('Unsupported data URL')
+      const mime = m[1]
+      const b64 = m[2]
+      buf = Buffer.from(b64, 'base64')
+      if (mime.includes('jpeg')) ext = '.jpg'
+      else if (mime.includes('webp')) ext = '.webp'
+      else if (mime.includes('gif')) ext = '.gif'
+    } else if (payload.imageUrl) {
+      // download
+      const tmp = await downloadToTemp(payload.imageUrl)
+      try {
+        const u = new URL(payload.imageUrl)
+        const e = path.extname(u.pathname).toLowerCase()
+        if (['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(e)) ext = e
+      } catch {}
+      const dest = path.join(cdir, `__tmp__${Date.now()}${ext}`)
+      await fsp.copyFile(tmp, dest)
+      try { await fsp.unlink(tmp) } catch {}
+      buf = await fsp.readFile(dest)
+      try { await fsp.unlink(dest) } catch {}
+    }
+    if (buf) {
+      imageFile = `${character}MOD${nextIndex}${ext}`
+      await fsp.writeFile(path.join(cdir, imageFile), buf)
+    }
+  }
+
+  json.mods.push({ name: modName, pageUrl: payload?.pageUrl || undefined, imageUrl: payload?.imageUrl || undefined, imageFile })
+  await fsp.writeFile(txtPath, JSON.stringify(json, null, 2), 'utf-8')
+  return { index: nextIndex, imageFile }
+})
+
+// Read a mod entry from the character's DataBase JSON (<Character>.txt) by mod name
+ipcMain.handle('database:getModEntry', async (_e, character: string, modName: string) => {
+  const { imagesRoot } = await readSettings()
+  if (!imagesRoot) return null
+  if (!character?.trim() || !modName?.trim()) return null
+  const cdir = path.join(imagesRoot, character)
+  try {
+    const txtPath = path.join(cdir, `${character}.txt`)
+    const raw = await fsp.readFile(txtPath, 'utf-8')
+    let json: any
+    try { json = JSON.parse(raw) } catch { json = { url: String(raw).trim() || undefined } }
+    if (!json || typeof json !== 'object') return null
+    const mods = Array.isArray(json.mods) ? json.mods : []
+    const found = mods.find((m: any) => m && typeof m === 'object' && m.name === modName)
+    if (!found) return null
+    return {
+      pageUrl: (found.pageUrl || undefined),
+      imageUrl: (found.imageUrl || undefined),
+      imageFile: (found.imageFile || undefined),
+    }
+  } catch {
+    return null
+  }
+})
+
+// Update (or insert) a mod entry inside the character's DataBase JSON
+ipcMain.handle('database:updateModEntry', async (_e, character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string }) => {
+  const { imagesRoot } = await readSettings()
+  if (!imagesRoot) throw new Error('Images root not set')
+  if (!character?.trim() || !modName?.trim()) throw new Error('Character and modName are required')
+  const cdir = path.join(imagesRoot, character)
+  ensureDirSync(cdir)
+
+  const txtPath = path.join(cdir, `${character}.txt`)
+  let json: any = {}
+  try {
+    const raw = await fsp.readFile(txtPath, 'utf-8')
+    try { json = JSON.parse(raw) } catch { json = { url: String(raw).trim() || undefined } }
+  } catch {}
+  if (!json || typeof json !== 'object') json = {}
+  if (!Array.isArray(json.mods)) json.mods = []
+
+  const mods = json.mods as any[]
+  let found = mods.find((m) => m && typeof m === 'object' && m.name === modName)
+  if (!found) {
+    found = { name: modName }
+    mods.push(found)
+  }
+  if (payload) {
+    if ('pageUrl' in payload) found.pageUrl = payload.pageUrl || undefined
+    if ('imageUrl' in payload) found.imageUrl = payload.imageUrl || undefined
+  }
+
+  await fsp.writeFile(txtPath, JSON.stringify(json, null, 2), 'utf-8')
+  return true
+})
+
 ipcMain.handle('mods:saveMetadata', async (_e, character: string, modName: string, meta: Partial<ModMeta>) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')

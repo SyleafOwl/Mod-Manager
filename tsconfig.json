@@ -21,5 +21,6 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src", "electron"],
+  "exclude": ["src/AgregarMOD.tsx", "src/AgregarMod.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
