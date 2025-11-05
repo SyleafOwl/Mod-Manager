@@ -22,6 +22,5 @@ declare namespace NodeJS {
 }
 
 // Used in Renderer process, expose in `preload.ts`
-interface Window {
-  ipcRenderer: import('electron').IpcRenderer
-}
+// We now expose a safe API via preload as `window.api` instead of ipcRenderer.
+interface Window { }
