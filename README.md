@@ -1,30 +1,51 @@
-# React + TypeScript + Vite
+# ZZZ Mod Manager
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicación de escritorio (Electron + React) para instalar y administrar mods de Zenless Zone Zero sin complicaciones.
 
-Currently, two official plugins are available:
+## Características
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Carpeta raíz configurable. Cada subcarpeta dentro de la raíz es un personaje y cada subcarpeta dentro de un personaje es un mod.
+- Agregar mods desde archivos .zip/.7z/.rar (se extraen automáticamente).
+- Editar metadatos del mod (versión, autor, descripción, página, URL de actualización).
+- Abrir la carpeta del mod o la página del mod en el navegador.
+- Actualizar con un clic si el mod tiene `updateUrl` directo.
+- Eliminar mods.
 
-## Expanding the ESLint configuration
+## Estructura esperada
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+```
+<modsRoot>/
+  <Personaje>/
+    <ModA>/
+      mod.json
+      preview.png (opcional)
+      ...archivos del mod
+    <ModB>/
+      ...
+```
 
-- Configure the top-level `parserOptions` property like this:
+`mod.json` ejemplo:
 
-```js
-export default {
-  // other rules...
-  parserOptions: {
-    ecmaVersion: 'latest',
-    sourceType: 'module',
-    project: ['./tsconfig.json', './tsconfig.node.json'],
-    tsconfigRootDir: __dirname,
-  },
+```json
+{
+  "name": "My Cool Mod",
+  "version": "1.0.0",
+  "author": "Tu nombre",
+  "description": "Descripción corta",
+  "pageUrl": "https://...",
+  "updateUrl": "https://.../archivo.zip",
+  "image": "preview.png"
 }
 ```
 
-- Replace `plugin:@typescript-eslint/recommended` to `plugin:@typescript-eslint/recommended-type-checked` or `plugin:@typescript-eslint/strict-type-checked`
-- Optionally add `plugin:@typescript-eslint/stylistic-type-checked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and add `plugin:react/recommended` & `plugin:react/jsx-runtime` to the `extends` list
+## Desarrollo
+
+Requisitos: Node.js 18+.
+
+- `npm install`
+- `npm run dev` para desarrollo.
+- `npm run build` para compilar y empaquetar.
+
+## Licencia
+
+MIT

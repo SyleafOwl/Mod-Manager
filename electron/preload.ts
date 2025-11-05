@@ -1,24 +1,20 @@
 import { ipcRenderer, contextBridge } from 'electron'
 
-// --------- Expose some API to the Renderer process ---------
-contextBridge.exposeInMainWorld('ipcRenderer', {
-  on(...args: Parameters<typeof ipcRenderer.on>) {
-    const [channel, listener] = args
-    return ipcRenderer.on(channel, (event, ...args) => listener(event, ...args))
-  },
-  off(...args: Parameters<typeof ipcRenderer.off>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.off(channel, ...omit)
-  },
-  send(...args: Parameters<typeof ipcRenderer.send>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.send(channel, ...omit)
-  },
-  invoke(...args: Parameters<typeof ipcRenderer.invoke>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.invoke(channel, ...omit)
-  },
+// --------- Expose a safe API to the Renderer process ---------
+contextBridge.exposeInMainWorld('api', {
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setModsRoot: (root: string) => ipcRenderer.invoke('settings:setModsRoot', root),
+  selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
+  selectArchive: () => ipcRenderer.invoke('dialog:selectArchive'),
 
-  // You can expose other APTs you need here.
-  // ...
+  listCharacters: () => ipcRenderer.invoke('characters:list'),
+  addCharacter: (name: string) => ipcRenderer.invoke('characters:add', name),
+
+  listMods: (character: string) => ipcRenderer.invoke('mods:list', character),
+  addModFromArchive: (character: string, archivePath: string, modName: string, meta?: any) => ipcRenderer.invoke('mods:addFromArchive', character, archivePath, modName, meta),
+  saveModMetadata: (character: string, modName: string, meta: any) => ipcRenderer.invoke('mods:saveMetadata', character, modName, meta),
+  deleteMod: (character: string, modName: string) => ipcRenderer.invoke('mods:delete', character, modName),
+  openModPage: (character: string, modName: string) => ipcRenderer.invoke('mods:openPage', character, modName),
+  openFolder: (character?: string, modName?: string) => ipcRenderer.invoke('mods:openFolder', character, modName),
+  updateFromUrl: (character: string, modName: string) => ipcRenderer.invoke('mods:updateFromUrl', character, modName),
 })
