@@ -111,7 +111,7 @@ export default function Agregar({ onClose, onAdded }: Props) {
               maxWidth: 'min(90vw, 420px)',
               maxHeight: 'min(60vh, 320px)',
               position: 'relative',
-              background: '#0e1320',
+              background: '#12100b',
               borderRadius: 8,
               overflow: 'hidden',
               border: '1px solid #3333',

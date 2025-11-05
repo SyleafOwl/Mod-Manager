@@ -64,7 +64,7 @@ body {
   gap: 6px;
   padding: 10px;
   background: var(--panel);
-  border: 1px solid #232735;
+  border: 1px solid #3a3124;
   border-radius: var(--radius);
   z-index: 10;
 }
@@ -94,7 +94,7 @@ body {
 .right-panel { display: none; }
 
 .mods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
-.mod-card { background: var(--panel); border: 1px solid #232735; border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+.mod-card { background: var(--panel); border: 1px solid #3a3124; border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
 .mod-thumb { height: 160px; background: #12100b; display: grid; place-items: center; cursor: pointer; }
 .mod-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .placeholder { color: var(--muted); font-size: 12px; }
@@ -107,6 +107,8 @@ body {
 
 /* General danger button style (used by top Eliminar and modals) */
 .danger { background: #2a1414; border-color: #402020; color: #ffacac; }
+.danger:hover { border-color: #5f2323; }
+.danger:focus, .danger:focus-visible { outline: 4px auto #5f2323; box-shadow: 0 0 0 2px rgba(138,31,31,0.3); }
 
 .empty, .empty-hint { color: var(--muted); display: grid; place-items: center; height: 100%; }
 .center { display: grid; place-items: center; gap: 16px; }
