@@ -251,6 +251,228 @@ ipcMain.handle('images:readDataUrl', async (_e, absPath: string) => {
   }
 })
 
+// Read preview.* from inside a mod archive and return as data URL
+ipcMain.handle('mods:getPreviewDataUrl', async (_e, character: string, modName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) return null
+  const cdir = characterDir(modsRoot, character)
+  try {
+    const files = await fsp.readdir(cdir)
+    const target = files.find((f) => /\.(zip|7z|rar)$/i.test(f) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+      || files.find((f) => /\.(zip|7z|rar)$/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
+    if (!target) return null
+    const archivePath = path.join(cdir, target)
+    // Extract preview.* to temp dir
+    const tmpDir = path.join(os.tmpdir(), `zzzmm_prev_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+    await fsp.mkdir(tmpDir, { recursive: true })
+    const sevenPath = sevenBin.path7za as string
+    await new Promise<void>((resolve) => {
+      const child = spawn(sevenPath, ['x', archivePath, 'preview.*', `-o${tmpDir}`, '-y'])
+      child.on('error', () => resolve())
+      child.on('close', () => resolve())
+    })
+    // Find extracted file
+    const candidates = ['preview.png', 'preview.jpg', 'preview.jpeg', 'preview.webp', 'preview.gif']
+    for (const name of candidates) {
+      const full = path.join(tmpDir, name)
+      if (fs.existsSync(full)) {
+        try {
+          const buf = await fsp.readFile(full)
+          const mime = guessMimeFromPath(full)
+          const base64 = buf.toString('base64')
+          return `data:${mime};base64,${base64}`
+        } catch {}
+      }
+    }
+    try { await fsp.rm(tmpDir, { recursive: true, force: true }) } catch {}
+    return null
+  } catch {
+    return null
+  }
+})
+
+// Read data file from inside mod archive; supports 'data.txt' (preferred) and legacy 'data'. Returns JSON { pageUrl?, imageUrl? }
+ipcMain.handle('mods:getData', async (_e, character: string, modName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) return null
+  const cdir = characterDir(modsRoot, character)
+  try {
+    // Folder-based mod: read data.txt or legacy data directly from folder if present
+    const folderPath = modDir(modsRoot, character, modName)
+    if (isDirectory(folderPath)) {
+      try {
+        const dataTxt = path.join(folderPath, 'data.txt')
+        const dataLegacy = path.join(folderPath, 'data')
+        const chosen = fs.existsSync(dataTxt) ? dataTxt : (fs.existsSync(dataLegacy) ? dataLegacy : null)
+        if (chosen) {
+          try {
+            const raw = await fsp.readFile(chosen, 'utf-8')
+            const j = JSON.parse(raw)
+            if (j && typeof j === 'object') return { pageUrl: j.pageUrl || undefined, imageUrl: j.imageUrl || undefined }
+          } catch {}
+        }
+      } catch {}
+    }
+    const files = await fsp.readdir(cdir)
+    const target = files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+      || files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.toLowerCase().includes(modName.toLowerCase()))
+    if (!target) return null
+  const archivePath = path.join(cdir, target)
+  const tmpDir = path.join(os.tmpdir(), `zzzmm_data_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+    await fsp.mkdir(tmpDir, { recursive: true })
+    const sevenPath = sevenBin.path7za as string
+    // Try extracting 'data.txt' first, then legacy 'data'
+    await new Promise<void>((resolve) => {
+      const child = spawn(sevenPath, ['x', archivePath, 'data.txt', `-o${tmpDir}`, '-y'])
+      child.on('error', () => resolve())
+      child.on('close', () => resolve())
+    })
+    await new Promise<void>((resolve) => {
+      const child = spawn(sevenPath, ['x', archivePath, 'data', `-o${tmpDir}`, '-y'])
+      child.on('error', () => resolve())
+      child.on('close', () => resolve())
+    })
+    const dataTxt = path.join(tmpDir, 'data.txt')
+    const dataLegacy = path.join(tmpDir, 'data')
+    let json: any = null
+    const chosen = fs.existsSync(dataTxt) ? dataTxt : (fs.existsSync(dataLegacy) ? dataLegacy : null)
+    if (chosen) {
+      try {
+        const raw = await fsp.readFile(chosen, 'utf-8')
+        json = JSON.parse(raw)
+      } catch {
+        try { json = JSON.parse(String(await fsp.readFile(chosen))) } catch { json = null }
+      }
+    }
+    try { await fsp.rm(tmpDir, { recursive: true, force: true }) } catch {}
+    if (json && typeof json === 'object') {
+      return { pageUrl: json.pageUrl || undefined, imageUrl: json.imageUrl || undefined }
+    }
+    return null
+  } catch {
+    return null
+  }
+})
+
+// Write (or overwrite) data.txt file inside mod archive (removes legacy 'data' if present)
+ipcMain.handle('mods:setData', async (_e, character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string }) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  const folderPath = modDir(modsRoot, character, modName)
+  // Folder-based: write data.txt directly
+  if (isDirectory(folderPath)) {
+    const dataTxt = path.join(folderPath, 'data.txt')
+    await fsp.writeFile(dataTxt, JSON.stringify({ pageUrl: payload.pageUrl || undefined, imageUrl: payload.imageUrl || undefined }, null, 2), 'utf-8')
+    try { await fsp.unlink(path.join(folderPath, 'data')) } catch {}
+    return true
+  }
+  // Archive-based fallback
+  const cdir = characterDir(modsRoot, character)
+  const files = await fsp.readdir(cdir)
+  const target = files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+    || files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.toLowerCase().includes(modName.toLowerCase()))
+  if (!target) throw new Error('Archive not found')
+  const archivePath = path.join(cdir, target)
+  const tmpDir = path.join(os.tmpdir(), `zzzmm_dataw_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+  await fsp.mkdir(tmpDir, { recursive: true })
+  const dataFile = path.join(tmpDir, 'data.txt')
+  await fsp.writeFile(dataFile, JSON.stringify({ pageUrl: payload.pageUrl || undefined, imageUrl: payload.imageUrl || undefined }, null, 2), 'utf-8')
+  const sevenPath = sevenBin.path7za as string
+  await new Promise<void>((resolve) => {
+    const child = spawn(sevenPath, ['d', archivePath, 'data'])
+    child.on('close', () => resolve())
+    child.on('error', () => resolve())
+  })
+  await new Promise<void>((resolve) => {
+    const child = spawn(sevenPath, ['d', archivePath, 'data.txt'])
+    child.on('close', () => resolve())
+    child.on('error', () => resolve())
+  })
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(sevenPath, ['a', archivePath, 'data.txt', '-y'], { cwd: tmpDir })
+    child.on('error', reject)
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error('7zip add exit ' + code))) )
+  })
+  try { await fsp.rm(tmpDir, { recursive: true, force: true }) } catch {}
+  return true
+})
+
+// Get primary internal name (first top-level item excluding preview.* and data)
+ipcMain.handle('mods:getPrimaryInternalName', async (_e, character: string, modName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) return null
+  const cdir = characterDir(modsRoot, character)
+  try {
+    // Folder-based mod: choose first top-level entry excluding data/data.txt and preview.* (prefer directory)
+    const folderPath = modDir(modsRoot, character, modName)
+    if (isDirectory(folderPath)) {
+      try {
+        const ents = await fsp.readdir(folderPath, { withFileTypes: true })
+        const filtered = ents.filter((e) => {
+          const n = e.name.toLowerCase()
+          if (n === 'data' || n === 'data.txt') return false
+          if (/^preview\.(png|jpe?g|webp|gif)$/i.test(n)) return false
+          return true
+        })
+        if (filtered.length === 0) return null
+        const dirEnt = filtered.find(e => e.isDirectory())
+        return (dirEnt ? dirEnt.name : filtered[0].name)
+      } catch {}
+    }
+    const files = await fsp.readdir(cdir)
+    const target = files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+      || files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.toLowerCase().includes(modName.toLowerCase()))
+    if (!target) return null
+    const archPath = path.join(cdir, target)
+    return await getPrimaryInternalNameFromArchive(archPath)
+  } catch {
+    return null
+  }
+})
+
+// Rename primary internal folder/file inside archive
+ipcMain.handle('mods:renamePrimaryInternal', async (_e, character: string, modName: string, newInternalName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  if (!newInternalName?.trim()) return { changed: false }
+  const folderPath = modDir(modsRoot, character, modName)
+  if (isDirectory(folderPath)) {
+    const ents = await fsp.readdir(folderPath, { withFileTypes: true })
+    const filtered = ents.filter((e) => {
+      const n = e.name.toLowerCase()
+      if (n === 'data' || n === 'data.txt') return false
+      if (/^preview\.(png|jpe?g|webp|gif)$/i.test(n)) return false
+      return true
+    })
+    if (filtered.length === 0) return { changed: false }
+    const primary = (filtered.find(e => e.isDirectory()) || filtered[0]).name
+    if (primary === newInternalName) return { changed: false }
+    const from = path.join(folderPath, primary)
+    const to = path.join(folderPath, newInternalName)
+    try { await fsp.access(to); throw new Error('Target already exists') } catch {}
+    await fsp.rename(from, to)
+    return { changed: true }
+  }
+  const cdir = characterDir(modsRoot, character)
+  const files = await fsp.readdir(cdir)
+  const target = files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+    || files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.toLowerCase().includes(modName.toLowerCase()))
+  if (!target) throw new Error('Archive not found')
+  const archPath = path.join(cdir, target)
+  const current = await getPrimaryInternalNameFromArchive(archPath)
+  if (!current || current === newInternalName) return { changed: false }
+  const sevenPath = sevenBin.path7za as string
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(sevenPath, ['rn', archPath, current, newInternalName])
+    child.on('error', reject)
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error('7zip rn exit ' + code))) )
+  })
+  return { changed: true }
+})
+
+// Get the top-level internal folder name inside the archive (e.g., "carpetaX").
+// We DO NOT modify the archive; we only list its contents.
+
 // Fetch an image from URL and return a data URL (avoids renderer CORS issues)
 ipcMain.handle('images:fetchAsDataUrl', async (_e, imageUrl: string) => {
   async function fetchBuffer(u: string, redirectDepth = 3): Promise<{ buf: Buffer; mime: string }> {
@@ -435,6 +657,91 @@ function pickFirstImageFile(dir: string, preferredBaseName?: string): string | n
 
 // --------------------------- IPC ---------------------------
 
+// Helper: get archive file name for a mod under a character directory
+// (helper removed)
+
+// Helper: get primary internal name using machine-readable 7z output (-slt).
+// Picks the first top-level entry excluding preview.* and data/data.txt. Prefers directories over files.
+async function getPrimaryInternalNameFromArchive(archivePath: string): Promise<string | null> {
+  const sevenPath = sevenBin.path7za as string
+  try {
+    const output: string = await new Promise((resolve, reject) => {
+      const child = spawn(sevenPath, ['l', '-slt', archivePath])
+      let out = ''
+      child.stdout.on('data', (d) => out += d.toString())
+      child.on('error', reject)
+      child.on('close', () => resolve(out))
+    })
+    const lines = output.split(/\r?\n/)
+    type Entry = { path?: string; folderFlag?: boolean }
+    const entries: Entry[] = []
+    let cur: Entry | null = null
+    for (const raw of lines) {
+      const line = raw.trim()
+      if (!line) { if (cur && (cur.path)) entries.push(cur); cur = null; continue }
+      const eq = line.indexOf('=')
+      if (eq > 0) {
+        const key = line.slice(0, eq).trim()
+        const value = line.slice(eq + 1).trim()
+        if (key === 'Path') {
+          if (!cur) cur = {}
+          cur.path = value
+        } else if (key === 'Folder') {
+          if (!cur) cur = {}
+          cur.folderFlag = (value === '+' || value.toLowerCase() === 'yes' || value === '1')
+        } else if (key === 'Attributes') {
+          if (!cur) cur = {}
+          if (/\bD/i.test(value)) cur.folderFlag = true
+        }
+      }
+    }
+    if (cur && cur.path) entries.push(cur)
+
+    // Build top-level list preserving order
+    const seen: string[] = []
+    const isDirMap: Record<string, boolean> = {}
+    const allPaths = entries.map(e => e.path!).filter(Boolean)
+    const splitFirst = (p: string) => {
+      const idx = Math.min(...['/', '\\'].map(ch => p.indexOf(ch)).filter(i => i >= 0))
+      return idx >= 0 ? p.slice(0, idx) : p
+    }
+
+    for (const e of entries) {
+      const p = e.path || ''
+      if (!p) continue
+      // Ignore non-entry headers like the archive file path (contains drive colon) or current dir markers
+      if (p.includes(':')) continue
+      if (p === '.' || p === './') continue
+      const top = splitFirst(p)
+      if (!top) continue
+      const lower = top.toLowerCase()
+      if (lower === 'data' || lower === 'data.txt') continue
+      if (/^preview\./i.test(top)) continue
+      if (!seen.includes(top)) seen.push(top)
+      // Mark as directory if a folder entry matches or if any path has children under this top
+      const hasChildren = allPaths.some(ap => ap !== top && (ap.startsWith(top + '/') || ap.startsWith(top + '\\')))
+      const isDir = !!e.folderFlag || hasChildren
+      if (isDir) isDirMap[top] = true
+      else if (!(top in isDirMap)) isDirMap[top] = false
+    }
+    if (seen.length === 0) return null
+    const dirTop = seen.find(t => isDirMap[t])
+    return dirTop || seen[0]
+  } catch {
+    return null
+  }
+}
+
+// Peek primary internal name from an arbitrary archive path (without copying into modsRoot)
+ipcMain.handle('mods:peekPrimaryInternalName', async (_e, archivePath: string) => {
+  if (!archivePath || typeof archivePath !== 'string') return null
+  try {
+    return await getPrimaryInternalNameFromArchive(archivePath)
+  } catch {
+    return null
+  }
+})
+
 ipcMain.handle('settings:get', async () => {
   return readSettings()
 })
@@ -473,7 +780,18 @@ ipcMain.handle('characters:list', async () => {
   if (!modsRoot) return []
   try {
     const entries = await fsp.readdir(modsRoot)
-    return entries.filter((n) => isDirectory(path.join(modsRoot, n)))
+    const dirs = entries.filter((n) => isDirectory(path.join(modsRoot, n)))
+    // Return display names (strip DISABLED_ prefix) without duplicates
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const d of dirs) {
+      const base = d.replace(/^DISABLED_/i, '')
+      if (!seen.has(base.toLowerCase())) {
+        seen.add(base.toLowerCase())
+        result.push(base)
+      }
+    }
+    return result
   } catch {
     return []
   }
@@ -482,20 +800,36 @@ ipcMain.handle('characters:list', async () => {
 ipcMain.handle('characters:listWithImages', async () => {
   const { modsRoot, imagesRoot } = await readSettings()
   if (!modsRoot) return []
-  let names: string[] = []
   try {
     const entries = await fsp.readdir(modsRoot)
-    names = entries.filter((n) => isDirectory(path.join(modsRoot, n)))
+    const dirs = entries.filter((n) => isDirectory(path.join(modsRoot, n)))
+    // Build a map by base name stripping DISABLED_ prefix. Prefer non-prefixed if both exist.
+    const bestFolderByBase: Record<string, string> = {}
+    for (const d of dirs) {
+      const base = d.replace(/^DISABLED_/i, '')
+      const has = bestFolderByBase[base]
+      if (!has) {
+        bestFolderByBase[base] = d
+      } else {
+        // prefer non-disabled
+        if (/^DISABLED_/i.test(has) && !/^DISABLED_/i.test(d)) bestFolderByBase[base] = d
+      }
+    }
+    const names = Object.keys(bestFolderByBase)
+    const items = names.map((name) => {
+      const idir = imagesRoot ? path.join(imagesRoot, name) : null
+      const imgPath = idir ? pickFirstImageFile(idir, name) : null
+      return { name, imagePath: imgPath || undefined }
+    })
+    return items
   } catch {
-    names = []
+    return []
   }
-  const items = names.map((name) => {
-    const idir = imagesRoot ? path.join(imagesRoot, name) : null
-    const imgPath = idir ? pickFirstImageFile(idir, name) : null
-    return { name, imagePath: imgPath || undefined }
-  })
-  return items
+  // unreachable
 })
+
+// Enable character by removing DISABLED_ prefix from its folder
+// Removed characters:enable/disable — character activation toggling no longer supported
 
 ipcMain.handle('characters:add', async (_e, name: string) => {
   const { modsRoot } = await readSettings()
@@ -508,8 +842,16 @@ ipcMain.handle('characters:add', async (_e, name: string) => {
 ipcMain.handle('characters:rename', async (_e, oldName: string, newName: string) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
-  const from = characterDir(modsRoot, oldName)
-  const to = characterDir(modsRoot, newName)
+  // Support renaming whether the character is enabled or disabled
+  let from = characterDir(modsRoot, oldName)
+  let to = characterDir(modsRoot, newName)
+  if (!isDirectory(from)) {
+    const alt = characterDir(modsRoot, `DISABLED_${oldName}`)
+    if (isDirectory(alt)) {
+      from = alt
+      to = characterDir(modsRoot, `DISABLED_${newName}`)
+    }
+  }
   if (!isDirectory(from)) throw new Error('Source character does not exist')
   if (from === to) return { changed: false }
   try {
@@ -602,23 +944,226 @@ ipcMain.handle('mods:list', async (_e, character: string) => {
   try {
     const entries = await fsp.readdir(cdir)
     const mods: any[] = []
-    for (const m of entries) {
-      const mdir = path.join(cdir, m)
+    // Track names to avoid duplicates when both a folder and a flat archive share the same base name
+    const seen = new Set<string>()
+    // 1. Existing legacy mod folders
+    for (const entry of entries) {
+      const mdir = path.join(cdir, entry)
       if (!isDirectory(mdir)) continue
       const meta = await readModMeta(mdir)
-      // find a preview image if present
       const imgCandidates = ['preview.png', 'preview.jpg', 'cover.png', 'cover.jpg']
       const img = meta.image && fs.existsSync(path.join(mdir, meta.image)) ? meta.image : imgCandidates.find((f) => fs.existsSync(path.join(mdir, f)))
+      let enabled = true
+      let archiveName: string | null = null
+      try {
+        const files = await fsp.readdir(mdir)
+        const archives = files.filter((f) => /\.(zip|7z|rar)$/i.test(f))
+        const exactActive = archives.find((f) => {
+          const ext = path.extname(f)
+          const base = path.basename(f, ext)
+          return !/^DISABLED_/i.test(f) && base.toLowerCase() === entry.toLowerCase()
+        })
+        const exactDisabled = archives.find((f) => {
+          const ext = path.extname(f)
+          const base = path.basename(f.replace(/^DISABLED_/i, ''), ext)
+          return /^DISABLED_/i.test(f) && base.toLowerCase() === entry.toLowerCase()
+        })
+        archiveName = exactActive || exactDisabled || archives[0] || null
+        if (archives.length > 0) enabled = archives.some((f) => !/^DISABLED_/i.test(f))
+      } catch {}
+      mods.push({ folder: entry, dir: mdir, meta: { ...meta, image: img, enabled }, archive: archiveName })
+      seen.add(entry.toLowerCase())
+    }
+    // 2. New flat archives directly inside the character directory (no per-mod folder)
+    for (const entry of entries) {
+      const full = path.join(cdir, entry)
+      if (!isFile(full)) continue
+      if (!/\.(zip|7z|rar)$/i.test(entry)) continue
+      const isDisabled = /^DISABLED_/i.test(entry)
+      const cleanName = entry.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '')
+      if (seen.has(cleanName.toLowerCase())) continue
+      // Preview is embedded inside the archive; do not set meta.image here
+      const imgFile = null
       mods.push({
-        folder: m,
-        dir: mdir,
-        meta: { ...meta, image: img },
+        folder: cleanName,
+        dir: cdir, // character directory as base
+        meta: { name: cleanName, enabled: !isDisabled, image: imgFile || undefined },
+        archive: entry,
+        flat: true,
       })
     }
     return mods
   } catch {
     return []
   }
+})
+
+// Activate one mod exclusively: ensure its archive(s) are not prefixed with DISABLED_, and prefix all others
+ipcMain.handle('mods:activateExclusive', async (_e, character: string, targetMod: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  if (!character?.trim() || !targetMod?.trim()) throw new Error('Character and target mod are required')
+  const cdir = characterDir(modsRoot, character)
+  const entries = await fsp.readdir(cdir)
+  for (const m of entries) {
+    const mdir = path.join(cdir, m)
+    if (!isDirectory(mdir)) continue
+    try {
+      const files = await fsp.readdir(mdir)
+      const archives = files.filter((f) => /\.(zip|7z|rar)$/i.test(f))
+      for (const file of archives) {
+        const from = path.join(mdir, file)
+        const isDisabled = /^DISABLED_/i.test(file)
+        if (m === targetMod) {
+          // ensure active: remove DISABLED_ if present
+          if (isDisabled) {
+            const toName = file.replace(/^DISABLED_/i, '')
+            const to = path.join(mdir, toName)
+            try { await fsp.rm(to, { force: true }) } catch {}
+            await fsp.rename(from, to)
+          }
+        } else {
+          // ensure disabled: add DISABLED_ if missing
+          if (!isDisabled) {
+            const to = path.join(mdir, `DISABLED_${file}`)
+            try { await fsp.rm(to, { force: true }) } catch {}
+            await fsp.rename(from, to)
+          }
+        }
+      }
+      // update metadata enabled flag for clarity
+      const enabled = (m === targetMod)
+      await writeModMeta(mdir, { name: m, enabled })
+    } catch {
+      // ignore per-mod errors
+    }
+  }
+  // Notify renderer
+  try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+  return true
+})
+
+// Enable a single mod: remove DISABLED_ prefix from its archive(s) only
+ipcMain.handle('mods:enable', async (_e, character: string, modName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  if (!character?.trim() || !modName?.trim()) throw new Error('Character and modName are required')
+  const mdir = modDir(modsRoot, character, modName)
+  if (!isDirectory(mdir)) {
+    // Flat fallback
+    const cdir = characterDir(modsRoot, character)
+    const files = await fsp.readdir(cdir)
+    const target = files.find((f) => /^DISABLED_/i.test(f) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+      || files.find((f) => /^DISABLED_/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
+    if (!target) return false
+    const from = path.join(cdir, target)
+    const to = path.join(cdir, target.replace(/^DISABLED_/i, ''))
+    try { await fsp.rm(to, { force: true }) } catch {}
+    await fsp.rename(from, to)
+    try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+    return true
+  }
+  // Legacy folder case
+  try {
+    const files = await fsp.readdir(mdir)
+    const archives = files.filter((f) => /(zip|7z|rar)$/i.test(path.extname(f)))
+    // Prefer enabling the archive whose base name matches the mod folder name; fallback to first disabled archive
+    const disabledArchives = archives.filter((f) => /^DISABLED_/i.test(f))
+    const target = disabledArchives.find((f) => {
+      const ext = path.extname(f)
+      const base = path.basename(f.replace(/^DISABLED_/i, ''), ext)
+      return base.toLowerCase() === modName.toLowerCase()
+    }) || disabledArchives[0]
+
+    if (target) {
+      const from = path.join(mdir, target)
+      const to = path.join(mdir, target.replace(/^DISABLED_/i, ''))
+      try { await fsp.rm(to, { force: true }) } catch {}
+      await fsp.rename(from, to)
+    }
+    await writeModMeta(mdir, { name: modName, enabled: true })
+  } catch {}
+  try { win?.webContents.send('fs-changed', { root: path.dirname(mdir) }) } catch {}
+  return true
+})
+
+// Flat archive enable (no folder) - separate handler for new structure
+ipcMain.handle('mods:enableFlat', async (_e, character: string, modName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  const cdir = characterDir(modsRoot, character)
+  const files = await fsp.readdir(cdir)
+  const target = files.find((f) => /^DISABLED_/i.test(f) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+    || files.find((f) => /^DISABLED_/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
+  if (!target) return false
+  const from = path.join(cdir, target)
+  const to = path.join(cdir, target.replace(/^DISABLED_/i, ''))
+  try { await fsp.rm(to, { force: true }) } catch {}
+  await fsp.rename(from, to)
+  try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+  return true
+})
+
+// Disable a single mod: ensure its archive(s) are prefixed with DISABLED_
+ipcMain.handle('mods:disable', async (_e, character: string, modName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  if (!character?.trim() || !modName?.trim()) throw new Error('Character and modName are required')
+  const mdir = modDir(modsRoot, character, modName)
+  if (!isDirectory(mdir)) {
+    // Flat fallback
+    const cdir = characterDir(modsRoot, character)
+    const files = await fsp.readdir(cdir)
+    const target = files.find((f) => !/^DISABLED_/i.test(f) && f.replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+      || files.find((f) => !/^DISABLED_/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
+    if (!target) return false
+    const from = path.join(cdir, target)
+    const to = path.join(cdir, `DISABLED_${target}`)
+    try { await fsp.rm(to, { force: true }) } catch {}
+    await fsp.rename(from, to)
+    try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+    return true
+  }
+  // Legacy folder case
+  try {
+    const files = await fsp.readdir(mdir)
+    const archives = files.filter((f) => /(zip|7z|rar)$/i.test(path.extname(f)))
+    // Prefer disabling the archive whose base name matches the mod folder name; fallback to first enabled archive
+    const enabledArchives = archives.filter((f) => !/^DISABLED_/i.test(f))
+    const target = enabledArchives.find((f) => {
+      const ext = path.extname(f)
+      const base = path.basename(f, ext)
+      return base.toLowerCase() === modName.toLowerCase()
+    }) || enabledArchives[0]
+
+    if (target) {
+      const from = path.join(mdir, target)
+      const to = path.join(mdir, `DISABLED_${target}`)
+      try { await fsp.rm(to, { force: true }) } catch {}
+      await fsp.rename(from, to)
+    }
+    await writeModMeta(mdir, { name: modName, enabled: false })
+  } catch {}
+  // Notify renderer
+  try { win?.webContents.send('fs-changed', { root: path.dirname(mdir) }) } catch {}
+  return true
+})
+
+// Flat archive disable (no folder)
+ipcMain.handle('mods:disableFlat', async (_e, character: string, modName: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  const cdir = characterDir(modsRoot, character)
+  const files = await fsp.readdir(cdir)
+  const target = files.find((f) => !/^DISABLED_/i.test(f) && f.replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+    || files.find((f) => !/^DISABLED_/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
+  if (!target) return false
+  const from = path.join(cdir, target)
+  const to = path.join(cdir, `DISABLED_${target}`)
+  try { await fsp.rm(to, { force: true }) } catch {}
+  await fsp.rename(from, to)
+  try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+  return true
 })
 
 ipcMain.handle('mods:addFromArchive', async (_e, character: string, archivePath: string, modName: string, meta: Partial<ModMeta> = {}) => {
@@ -631,15 +1176,7 @@ ipcMain.handle('mods:addFromArchive', async (_e, character: string, archivePath:
   return true
 })
 
-function uniqueModName(root: string, character: string, base: string) {
-  let name = base
-  let i = 2
-  while (true) {
-    const dir = modDir(root, character, name)
-    if (!fs.existsSync(dir)) return name
-    name = `${base} (${i++})`
-  }
-}
+// Removed legacy uniqueModName (no longer used)
 
 ipcMain.handle('mods:copyArchiveToModFolder', async (_e, character: string, archivePath: string) => {
   const { modsRoot } = await readSettings()
@@ -648,19 +1185,44 @@ ipcMain.handle('mods:copyArchiveToModFolder', async (_e, character: string, arch
   if (!archivePath) throw new Error('Archive required')
   const originalName = path.basename(archivePath)
   const base = originalName.replace(/\.(zip|7z|rar)$/i, '')
-  const modName = uniqueModName(modsRoot, character, base)
-  const mdir = modDir(modsRoot, character, modName)
-  await fsp.mkdir(mdir, { recursive: true })
-  const dest = path.join(mdir, originalName)
-  await fsp.copyFile(archivePath, dest)
-  return { modName, fileName: originalName, dir: mdir }
+  // Generate unique base name among existing archives (flat) and legacy folders
+  const cdir = characterDir(modsRoot, character)
+  await fsp.mkdir(cdir, { recursive: true })
+  let modName = base
+  let i = 2
+  while (true) {
+    const collisionArchive = ['.zip', '.7z', '.rar'].some((ext) => fs.existsSync(path.join(cdir, `${modName}${ext}`)) || fs.existsSync(path.join(cdir, `DISABLED_${modName}${ext}`)))
+    const collisionFolder = fs.existsSync(path.join(cdir, modName))
+    if (!collisionArchive && !collisionFolder) break
+    modName = `${base} (${i++})`
+  }
+  // Create folder and extract archive there (convert archive to folder-based mod)
+  const destDir = path.join(cdir, modName)
+  await fsp.mkdir(destDir, { recursive: true })
+  await extractArchive(archivePath, destDir)
+  // Flatten single top-level folder
+  try {
+    const ents = await fsp.readdir(destDir, { withFileTypes: true })
+    const fileCount = ents.filter(e => e.isFile()).length
+    const dirEntries = ents.filter(e => e.isDirectory())
+    if (fileCount === 0 && dirEntries.length === 1) {
+      const inner = path.join(destDir, dirEntries[0].name)
+      const innerItems = await fsp.readdir(inner)
+      for (const name of innerItems) {
+        await fsp.rename(path.join(inner, name), path.join(destDir, name))
+      }
+      try { await fsp.rmdir(inner) } catch {}
+    }
+  } catch {}
+  try { await writeModMeta(destDir, { name: modName, enabled: true }) } catch {}
+  return { modName, dir: cdir }
 })
 
 ipcMain.handle('mods:saveImageFromDataUrl', async (_e, character: string, modName: string, dataUrl: string) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
-  const mdir = modDir(modsRoot, character, modName)
-  await fsp.mkdir(mdir, { recursive: true })
+  const cdir = characterDir(modsRoot, character)
+  await fsp.mkdir(cdir, { recursive: true })
   const m = /^data:(.+?);base64,(.*)$/.exec(dataUrl)
   if (!m) throw new Error('Unsupported data URL')
   const mime = m[1]
@@ -670,16 +1232,40 @@ ipcMain.handle('mods:saveImageFromDataUrl', async (_e, character: string, modNam
   if (mime.includes('jpeg')) ext = '.jpg'
   else if (mime.includes('webp')) ext = '.webp'
   else if (mime.includes('gif')) ext = '.gif'
-  const fileName = `preview${ext}`
-  await fsp.writeFile(path.join(mdir, fileName), buf)
-  return fileName
+  // Folder-based: write preview file directly
+  const mdir = modDir(modsRoot, character, modName)
+  if (isDirectory(mdir)) {
+    const out = path.join(mdir, `preview${ext}`)
+    await fsp.writeFile(out, buf)
+    return `preview${ext}`
+  }
+  // Find the target archive (prefer enabled)
+  const files = await fsp.readdir(cdir)
+  const target = files.find((f) => /\.(zip|7z)$/i.test(f) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z)$/i, '').toLowerCase() === modName.toLowerCase())
+    || files.find((f) => /\.(zip|7z)$/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
+  if (!target) throw new Error('Archive not found for mod')
+  const archivePath = path.join(cdir, target)
+  // Write temp preview file with the desired name
+  const tmpDir = path.join(os.tmpdir(), `zzzmm_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+  await fsp.mkdir(tmpDir, { recursive: true })
+  const tmpFile = path.join(tmpDir, `preview${ext}`)
+  await fsp.writeFile(tmpFile, buf)
+  // Add/update inside archive using 7z
+  const sevenPath = sevenBin.path7za as string
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(sevenPath, ['a', archivePath, 'preview' + ext, '-y'], { cwd: tmpDir })
+    child.on('error', reject)
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error('7zip add exit ' + code))))
+  })
+  try { await fsp.rm(tmpDir, { recursive: true, force: true }) } catch {}
+  return `preview${ext}`
 })
 
 ipcMain.handle('mods:saveImageFromUrl', async (_e, character: string, modName: string, imageUrl: string) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
-  const mdir = modDir(modsRoot, character, modName)
-  await fsp.mkdir(mdir, { recursive: true })
+  const cdir = characterDir(modsRoot, character)
+  await fsp.mkdir(cdir, { recursive: true })
   // Download buffer
   const tmp = await downloadToTemp(imageUrl)
   let urlExt = '.png'
@@ -688,166 +1274,126 @@ ipcMain.handle('mods:saveImageFromUrl', async (_e, character: string, modName: s
     const e = path.extname(u.pathname).toLowerCase()
     if (['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(e)) urlExt = e
   } catch {}
-  const fileName = `preview${urlExt}`
-  await fsp.copyFile(tmp, path.join(mdir, fileName))
+  // Folder-based: copy preview into folder
+  const mdir2 = modDir(modsRoot, character, modName)
+  if (isDirectory(mdir2)) {
+    const out = path.join(mdir2, `preview${urlExt}`)
+    await fsp.copyFile(tmp, out)
+    try { await fsp.unlink(tmp) } catch {}
+    return `preview${urlExt}`
+  }
+  // Find target archive
+  const files = await fsp.readdir(cdir)
+  const target = files.find((f) => /\.(zip|7z)$/i.test(f) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z)$/i, '').toLowerCase() === modName.toLowerCase())
+    || files.find((f) => /\.(zip|7z)$/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
+  if (!target) throw new Error('Archive not found for mod')
+  const archivePath = path.join(cdir, target)
+  // Place tmp image with desired name in a temp dir then add via 7z
+  const tmpDir = path.join(os.tmpdir(), `zzzmm_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+  await fsp.mkdir(tmpDir, { recursive: true })
+  const tmpImg = path.join(tmpDir, `preview${urlExt}`)
+  await fsp.copyFile(tmp, tmpImg)
   try { await fsp.unlink(tmp) } catch {}
-  return fileName
+  const sevenPath = sevenBin.path7za as string
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(sevenPath, ['a', archivePath, path.basename(tmpImg), '-y'], { cwd: tmpDir })
+    child.on('error', reject)
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error('7zip add exit ' + code))))
+  })
+  try { await fsp.rm(tmpDir, { recursive: true, force: true }) } catch {}
+  return `preview${urlExt}`
 })
 
-// Add a mod entry into the character's DataBase JSON and optionally save an image as <Character>MOD<N>.* inside the images folder
-ipcMain.handle('database:addModEntry', async (_e, character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string; dataUrl?: string }) => {
-  const { imagesRoot } = await readSettings()
-  if (!imagesRoot) throw new Error('Images root not set')
-  if (!character?.trim()) throw new Error('Character required')
-  const cdir = path.join(imagesRoot, character)
-  ensureDirSync(cdir)
-
-  // Read existing JSON
-  const txtPath = path.join(cdir, `${character}.txt`)
-  let json: any = {}
-  try {
-    const raw = await fsp.readFile(txtPath, 'utf-8')
-    try { json = JSON.parse(raw) } catch { json = { url: String(raw).trim() || undefined } }
-  } catch {}
-  if (!json || typeof json !== 'object') json = {}
-  if (!Array.isArray(json.mods)) json.mods = []
-
-  // Determine next mod index
-  let nextIndex = json.mods.length + 1
-  try {
-    const files = await fsp.readdir(cdir)
-    const re = new RegExp(`^${character}MOD(\\d+)\\.(png|jpe?g|webp|gif)$`, 'i')
-    let max = 0
-    for (const f of files) {
-      const m = re.exec(f)
-      if (m) {
-        const n = parseInt(m[1], 10)
-        if (n > max) max = n
-      }
-    }
-    nextIndex = Math.max(nextIndex, max + 1)
-  } catch {}
-
-  // Save image file if provided
-  let imageFile: string | undefined
-  if (payload?.dataUrl || payload?.imageUrl) {
-    let buf: Buffer | null = null
-    let ext = '.png'
-    if (payload.dataUrl) {
-      const m = /^data:(.+?);base64,(.*)$/.exec(payload.dataUrl)
-      if (!m) throw new Error('Unsupported data URL')
-      const mime = m[1]
-      const b64 = m[2]
-      buf = Buffer.from(b64, 'base64')
-      if (mime.includes('jpeg')) ext = '.jpg'
-      else if (mime.includes('webp')) ext = '.webp'
-      else if (mime.includes('gif')) ext = '.gif'
-    } else if (payload.imageUrl) {
-      // download
-      const tmp = await downloadToTemp(payload.imageUrl)
-      try {
-        const u = new URL(payload.imageUrl)
-        const e = path.extname(u.pathname).toLowerCase()
-        if (['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(e)) ext = e
-      } catch {}
-      const dest = path.join(cdir, `__tmp__${Date.now()}${ext}`)
-      await fsp.copyFile(tmp, dest)
-      try { await fsp.unlink(tmp) } catch {}
-      buf = await fsp.readFile(dest)
-      try { await fsp.unlink(dest) } catch {}
-    }
-    if (buf) {
-      imageFile = `${character}MOD${nextIndex}${ext}`
-      await fsp.writeFile(path.join(cdir, imageFile), buf)
-    }
-  }
-
-  json.mods.push({ name: modName, pageUrl: payload?.pageUrl || undefined, imageUrl: payload?.imageUrl || undefined, imageFile })
-  await fsp.writeFile(txtPath, JSON.stringify(json, null, 2), 'utf-8')
-  return { index: nextIndex, imageFile }
-})
-
-// Read a mod entry from the character's DataBase JSON (<Character>.txt) by mod name
-ipcMain.handle('database:getModEntry', async (_e, character: string, modName: string) => {
-  const { imagesRoot } = await readSettings()
-  if (!imagesRoot) return null
-  if (!character?.trim() || !modName?.trim()) return null
-  const cdir = path.join(imagesRoot, character)
-  try {
-    const txtPath = path.join(cdir, `${character}.txt`)
-    const raw = await fsp.readFile(txtPath, 'utf-8')
-    let json: any
-    try { json = JSON.parse(raw) } catch { json = { url: String(raw).trim() || undefined } }
-    if (!json || typeof json !== 'object') return null
-    const mods = Array.isArray(json.mods) ? json.mods : []
-    const found = mods.find((m: any) => m && typeof m === 'object' && m.name === modName)
-    if (!found) return null
-    return {
-      pageUrl: (found.pageUrl || undefined),
-      imageUrl: (found.imageUrl || undefined),
-      imageFile: (found.imageFile || undefined),
-    }
-  } catch {
-    return null
-  }
-})
-
-// Update (or insert) a mod entry inside the character's DataBase JSON
-ipcMain.handle('database:updateModEntry', async (_e, character: string, modName: string, payload: { pageUrl?: string; imageUrl?: string }) => {
-  const { imagesRoot } = await readSettings()
-  if (!imagesRoot) throw new Error('Images root not set')
-  if (!character?.trim() || !modName?.trim()) throw new Error('Character and modName are required')
-  const cdir = path.join(imagesRoot, character)
-  ensureDirSync(cdir)
-
-  const txtPath = path.join(cdir, `${character}.txt`)
-  let json: any = {}
-  try {
-    const raw = await fsp.readFile(txtPath, 'utf-8')
-    try { json = JSON.parse(raw) } catch { json = { url: String(raw).trim() || undefined } }
-  } catch {}
-  if (!json || typeof json !== 'object') json = {}
-  if (!Array.isArray(json.mods)) json.mods = []
-
-  const mods = json.mods as any[]
-  let found = mods.find((m) => m && typeof m === 'object' && m.name === modName)
-  if (!found) {
-    found = { name: modName }
-    mods.push(found)
-  }
-  if (payload) {
-    if ('pageUrl' in payload) found.pageUrl = payload.pageUrl || undefined
-    if ('imageUrl' in payload) found.imageUrl = payload.imageUrl || undefined
-  }
-
-  await fsp.writeFile(txtPath, JSON.stringify(json, null, 2), 'utf-8')
-  return true
-})
+// Add or upsert a mod entry into the character's DataBase JSON (no longer saves a copy like <Character>MOD<N>.*; we use per-mod preview files instead)
+// Removed DataBase mod entry handlers (data now embedded per archive)
 
 ipcMain.handle('mods:saveMetadata', async (_e, character: string, modName: string, meta: Partial<ModMeta>) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
   const mdir = modDir(modsRoot, character, modName)
-  const saved = await writeModMeta(mdir, { name: modName, ...meta })
-  return saved
+  if (isDirectory(mdir)) {
+    const saved = await writeModMeta(mdir, { name: modName, ...meta })
+    return saved
+  }
+  // Flat mods: persist nothing here; metadata handled via archive data file + preview
+  return { name: modName, ...meta } as ModMeta
 })
 
 ipcMain.handle('mods:delete', async (_e, character: string, modName: string) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
   const mdir = modDir(modsRoot, character, modName)
-  await fsp.rm(mdir, { recursive: true, force: true })
+  if (isDirectory(mdir)) {
+    await fsp.rm(mdir, { recursive: true, force: true })
+  } else {
+    const cdir = characterDir(modsRoot, character)
+    // Remove archive (enabled or disabled) matching modName and the preview file
+    try {
+      const files = await fsp.readdir(cdir)
+      const arch = files.find((f) => f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+      if (arch) { try { await fsp.unlink(path.join(cdir, arch)) } catch {} }
+      const preview = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].map((e) => `${modName}.preview${e}`).find((f) => fs.existsSync(path.join(cdir, f)))
+      if (preview) { try { await fsp.unlink(path.join(cdir, preview)) } catch {} }
+    } catch {}
+  }
   return true
 })
 
 ipcMain.handle('mods:openPage', async (_e, character: string, modName: string) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) return false
+  // Folder-based: read data.txt directly
+  try {
+    const folderPath = modDir(modsRoot, character, modName)
+    if (isDirectory(folderPath)) {
+      const dataTxt = path.join(folderPath, 'data.txt')
+      const dataLegacy = path.join(folderPath, 'data')
+      const chosen = fs.existsSync(dataTxt) ? dataTxt : (fs.existsSync(dataLegacy) ? dataLegacy : null)
+      if (chosen) {
+        try { const j = JSON.parse(await fsp.readFile(chosen, 'utf-8')); if (j?.pageUrl) { await shell.openExternal(j.pageUrl); return true } } catch {}
+      }
+    }
+  } catch {}
+  // 1) Try archive-embedded data file first
+  try {
+    const cdir = characterDir(modsRoot, character)
+    const files = await fsp.readdir(cdir)
+    const target = files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
+      || files.find((f) => /(zip|7z|rar)$/i.test(path.extname(f)) && f.toLowerCase().includes(modName.toLowerCase()))
+    if (target) {
+      const archPath = path.join(cdir, target)
+      const tmpDir = path.join(os.tmpdir(), `zzzmm_open_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+      await fsp.mkdir(tmpDir, { recursive: true })
+      const sevenPath = sevenBin.path7za as string
+      // Try both data.txt and legacy data
+      await new Promise<void>((resolve) => {
+        const child = spawn(sevenPath, ['x', archPath, 'data.txt', `-o${tmpDir}`, '-y'])
+        child.on('error', () => resolve())
+        child.on('close', () => resolve())
+      })
+      await new Promise<void>((resolve) => {
+        const child = spawn(sevenPath, ['x', archPath, 'data', `-o${tmpDir}`, '-y'])
+        child.on('error', () => resolve())
+        child.on('close', () => resolve())
+      })
+      const dataTxt = path.join(tmpDir, 'data.txt')
+      const dataLegacy = path.join(tmpDir, 'data')
+      const chosen = fs.existsSync(dataTxt) ? dataTxt : (fs.existsSync(dataLegacy) ? dataLegacy : null)
+      if (chosen) {
+        try {
+          const raw = await fsp.readFile(chosen, 'utf-8')
+          const j = JSON.parse(raw)
+          if (j?.pageUrl) { await shell.openExternal(j.pageUrl); try { await fsp.rm(tmpDir, { recursive: true, force: true }) } catch {}; return true }
+        } catch {}
+      }
+      try { await fsp.rm(tmpDir, { recursive: true, force: true }) } catch {}
+    }
+  } catch {}
+  // 2) Fallback to legacy mod.json
   const mdir = modDir(modsRoot, character, modName)
-  const meta = await readModMeta(mdir)
-  if (meta.pageUrl) {
-    await shell.openExternal(meta.pageUrl)
-    return true
+  if (isDirectory(mdir)) {
+    const meta = await readModMeta(mdir)
+    if (meta.pageUrl) { await shell.openExternal(meta.pageUrl); return true }
   }
   return false
 })
@@ -857,7 +1403,10 @@ ipcMain.handle('mods:openFolder', async (_e, character: string, modName?: string
   if (!modsRoot) return false
   let target = modsRoot
   if (character) target = characterDir(modsRoot, character)
-  if (modName) target = modDir(modsRoot, character, modName)
+  if (modName) {
+    const mdir = modDir(modsRoot, character, modName)
+    target = isDirectory(mdir) ? mdir : characterDir(modsRoot, character)
+  }
   await shell.openPath(target)
   return true
 })
@@ -876,3 +1425,20 @@ ipcMain.handle('mods:updateFromUrl', async (_e, character: string, modName: stri
 })
 
 // Note: 'characters:updateImages' feature was removed intentionally.
+
+// --------------------------- FS Utilities ---------------------------
+// Delete a file if it resides under modsRoot or imagesRoot
+ipcMain.handle('fs:deleteFile', async (_e, absPath: string) => {
+  if (!absPath || typeof absPath !== 'string') return false
+  try {
+    const s = await readSettings()
+    const allowRoots = [s.modsRoot, s.imagesRoot].filter(Boolean) as string[]
+    const normalized = path.resolve(absPath)
+    const isAllowed = allowRoots.some((root) => normalized.startsWith(path.resolve(root)))
+    if (!isAllowed) return false
+    await fsp.unlink(normalized)
+    return true
+  } catch {
+    return false
+  }
+})

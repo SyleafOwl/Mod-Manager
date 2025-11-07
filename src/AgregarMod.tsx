@@ -19,6 +19,8 @@ export default function AgregarMod({ character, archivePath, archiveFileName, on
   const VIS_W = 360
   const VIS_H = 270
 
+  // modName se obtiene solo al confirmar (después de copiar el archivo)
+  const [internalName, setInternalName] = useState<string>('')
   const [pageUrl, setPageUrl] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const [imgOk, setImgOk] = useState(true)
@@ -40,6 +42,19 @@ export default function AgregarMod({ character, archivePath, archiveFileName, on
     if (!imageUrl.trim()) { setSrcDataUrl(''); setImgOk(true) }
   }, [imageUrl])
 
+  // Al montar: solo inspeccionar el archivo original para prellenar nombre interno (sin copiar aún)
+  useEffect(() => {
+    let cancelled = false
+    async function peek() {
+      try {
+        const name = await window.api.peekPrimaryInternalName(archivePath)
+        if (!cancelled && name) setInternalName(name)
+      } catch {}
+    }
+    peek()
+    return () => { cancelled = true }
+  }, [archivePath])
+
   async function fetchPreviewFromUrl() {
     const u = imageUrl.trim()
     if (!u) { setSrcDataUrl(''); setImgOk(true); return }
@@ -55,26 +70,23 @@ export default function AgregarMod({ character, archivePath, archiveFileName, on
 
   async function handleSave() {
     try {
-      // Copy archive now and get the resulting mod folder name
-      const { modName } = await window.api.copyArchiveToModFolder(character, archivePath)
-
-      let imageRel: string | undefined
+      // Convertir el archivo a carpeta de mod (confirmación explícita)
+      const { modName } = await window.api.createModFromArchive(character, archivePath)
+      // Guardar preview si se proporcionó
       if (srcDataUrl) {
-        imageRel = await window.api.saveModImageFromDataUrl(character, modName, srcDataUrl)
+        await window.api.saveModImageFromDataUrl(character, modName, srcDataUrl)
       } else if (imageUrl.trim()) {
-        imageRel = await window.api.saveModImageFromUrl(character, modName, imageUrl.trim())
+        await window.api.saveModImageFromUrl(character, modName, imageUrl.trim())
       }
-      // Also persist into DataBase JSON and save image as <Character>MOD<N>.*
-      await window.api.addModEntryToDatabase(character, modName, {
+      // Escribir data.txt
+      await window.api.setModData(character, modName, {
         pageUrl: pageUrl.trim() || undefined,
         imageUrl: imageUrl.trim() || undefined,
-        dataUrl: srcDataUrl || undefined,
       })
-      await window.api.saveModMetadata(character, modName, {
-        name: modName,
-        pageUrl: pageUrl.trim() || undefined,
-        image: imageRel || undefined,
-      })
+      // Renombrar interno si cambió (handler valida). En carpeta renombra la entrada principal.
+      if (internalName.trim()) {
+        try { await window.api.renamePrimaryInternal(character, modName, internalName.trim()) } catch {}
+      }
       await onSaved?.()
     } finally {
       onClose()
@@ -110,6 +122,12 @@ export default function AgregarMod({ character, archivePath, archiveFileName, on
               )}
             </div>
             <div className="muted" style={{ fontSize: 12, textAlign: 'center' }}>Sin recuadro: se muestra la imagen tal cual, ajustada al tamaño.</div>
+          </div>
+
+          {/* Internal mod name (editable) */}
+          <div className="field-row">
+            <div className="label">Nombre del Mod</div>
+            <input value={internalName} onChange={(e) => setInternalName(e.target.value)} placeholder="Carpeta o archivo principal dentro del ZIP" />
           </div>
 
           {/* Archive name (read-only) */}

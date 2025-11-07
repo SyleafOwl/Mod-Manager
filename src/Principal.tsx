@@ -26,6 +26,7 @@ type ModItem = {
   folder: string
   dir: string
   meta: ModMeta
+  archive?: string | null
 }
 
 type Settings = { modsRoot?: string; imagesRoot?: string }
@@ -38,6 +39,8 @@ function Principal() {
   const [selectedChar, setSelectedChar] = useState<string>('')
   const [mods, setMods] = useState<ModItem[]>([])
   const [modImgSrcs, setModImgSrcs] = useState<Record<string, string>>({})
+  const [modInternalNames, setModInternalNames] = useState<Record<string, string>>({})
+  const [modPageUrls, setModPageUrls] = useState<Record<string, string>>({})
   const [charImgSrcs, setCharImgSrcs] = useState<Record<string, string>>({})
   const [charCrops, setCharCrops] = useState<Record<string, CropMeta | undefined>>({})
   const [showUpdatePanel, setShowUpdatePanel] = useState(false)
@@ -51,6 +54,8 @@ function Principal() {
   const [modToEdit, setModToEdit] = useState<ModItem | null>(null)
   const [modToDelete, setModToDelete] = useState<string>('')
   const [pendingMod, setPendingMod] = useState<{ archivePath: string; archiveFileName: string } | null>(null)
+  const [previewSrc, setPreviewSrc] = useState<string>('')
+  const [showPreview, setShowPreview] = useState(false)
   const readyRef = useRef(false)
   const hasRoot = useMemo(() => !!settings.modsRoot, [settings])
 
@@ -71,7 +76,9 @@ function Principal() {
   async function refreshCharacters() {
     const list = await window.api.listCharactersWithImages()
     setCharacters(list)
-    if (list.length && !selectedChar) setSelectedChar(list[0].name)
+    if (list.length && !selectedChar) {
+      setSelectedChar(list[0].name)
+    }
     // Load data URLs for images to avoid file:// restrictions in dev server
     const entries = await Promise.all(list.map(async (c) => {
       if (!c.imagePath) return [c.name, ''] as const
@@ -96,24 +103,50 @@ function Principal() {
     setCharCrops(cropMap)
   }
 
-  async function refreshMods(character: string) {
-    const list = await window.api.listMods(character)
-    setMods(list)
+  async function refreshMods(characterFolder: string) {
+    const list = await window.api.listMods(characterFolder)
+    // active mods first
+    list.sort((a: any, b: any) => {
+      const ae = a?.meta?.enabled ? 1 : 0
+      const be = b?.meta?.enabled ? 1 : 0
+      if (ae !== be) return be - ae
+      return (a.folder || '').localeCompare(b.folder || '', undefined, { sensitivity: 'base' })
+    })
+  setMods(list)
     // Build data URLs for mod preview images to avoid file:// restrictions in dev server
     const entries = await Promise.all(list.map(async (m) => {
-      const rel = m.meta.image
-      if (!rel) return [m.dir, ''] as const
-      try {
-        const abs = `${m.dir.replace(/\\/g, '/')}/${rel}`
-        const dataUrl = await window.api.readImageAsDataUrl(abs)
-        return [m.dir, dataUrl || ''] as const
-      } catch {
-        return [m.dir, ''] as const
+      // For flat mods (no meta.image) attempt to pull preview from inside archive
+      if (!m.meta.image) {
+        try {
+          const dataUrl = await window.api.getModPreviewDataUrl(characterFolder, m.folder)
+          return [m.dir + '::' + m.folder, dataUrl || ''] as const
+        } catch { return [m.dir + '::' + m.folder, ''] as const }
       }
+      try {
+        const abs = `${m.dir.replace(/\\/g, '/')}/${m.meta.image}`
+        const dataUrl = await window.api.readImageAsDataUrl(abs)
+        return [m.dir + '::' + m.folder, dataUrl || ''] as const
+      } catch { return [m.dir + '::' + m.folder, ''] as const }
     }))
     const map: Record<string, string> = {}
-    for (const [dir, src] of entries) { if (src) map[dir] = src }
+  for (const [key, src] of entries) { if (src) map[key] = src }
     setModImgSrcs(map)
+
+    // Load internal names and data (pageUrl)
+    const nameEntries = await Promise.all(list.map(async (m) => {
+      try { const n = await window.api.getPrimaryInternalName(characterFolder, m.folder); return [m.dir + '::' + m.folder, n || ''] as const } catch { return [m.dir + '::' + m.folder, ''] as const }
+    }))
+    const namesMap: Record<string, string> = {}
+    for (const [key, value] of nameEntries) { if (value) namesMap[key] = value }
+    setModInternalNames(namesMap)
+
+    const dataEntries = await Promise.all(list.map(async (m) => {
+      try { const d = await window.api.getModData(characterFolder, m.folder); return [m.dir + '::' + m.folder, d?.pageUrl || ''] as const } catch { return [m.dir + '::' + m.folder, ''] as const }
+    }))
+    const urlsMap: Record<string, string> = {}
+    for (const [key, url] of dataEntries) { if (url) urlsMap[key] = url }
+    setModPageUrls(urlsMap)
+
     if (!readyRef.current) {
       try { window.api.notifyReady() } catch {}
       readyRef.current = true
@@ -224,16 +257,23 @@ function Principal() {
   return (
     <div className="layout layout-2">
       {header}
+      {/* Subencabezados separados (no dentro de los scrollers) */}
+      <div className="panel-header subheader-left">
+        <h2>Personajes</h2>
+        <div className="spacer" />
+        <button onClick={() => setShowAgregar(true)} title="Agregar personaje">+ Agregar</button>
+        <button onClick={() => setShowEditar(true)} title="Editar personaje">✎ Editar</button>
+        <button className="danger" onClick={() => setShowEliminar(true)} title="Eliminar personaje" disabled={!selectedChar}>✖ Eliminar</button>
+        {/* Character enable/disable removed */}
+      </div>
+      <div className="panel-header subheader-right">
+        <h3>Mods</h3>
+        <div className="spacer" />
+        <button onClick={addMod} disabled={!selectedChar}>+ Agregar Mod (ZIP/7z)</button>
+      </div>
 
       {/* Izquierda: Personajes */}
       <main className="characters-panel">
-        <div className="panel-header">
-          <h2>Personajes</h2>
-          <div className="spacer" />
-          <button onClick={() => setShowAgregar(true)} title="Agregar personaje">+ Agregar</button>
-          <button onClick={() => setShowEditar(true)} title="Editar personaje">✎ Editar</button>
-          <button className="danger" onClick={() => setShowEliminar(true)} title="Eliminar personaje" disabled={!selectedChar}>✖ Eliminar</button>
-        </div>
         <div className="characters-grid">
           {characters.map((c) => (
             <div
@@ -244,7 +284,7 @@ function Principal() {
               {charImgSrcs[c.name] ? (
                 (() => {
                   const crop = charCrops[c.name]
-                  const baseStyle: any = { width: 'var(--char-thumb-width)', height: 'var(--char-thumb-height)', borderRadius: 8, overflow: 'hidden', backgroundColor: '#0e1320' }
+                  const baseStyle: any = { width: 'var(--char-thumb-width)', height: 'var(--char-thumb-height)', borderRadius: 0, overflow: 'visible', backgroundColor: '#0e1320' }
                   if (crop && crop.originalWidth > 0 && crop.originalHeight > 0 && crop.width > 0 && crop.height > 0) {
                     const varW = getComputedStyle(document.documentElement).getPropertyValue('--char-thumb-width')
                     const varH = getComputedStyle(document.documentElement).getPropertyValue('--char-thumb-height')
@@ -253,7 +293,7 @@ function Principal() {
                     // scale so that the crop area fits exactly the container (keep decimals for precision)
                     const scaleX = containerW / crop.width
                     const scaleY = containerH / crop.height
-                    const scale = scaleX || scaleY || 1
+                    const scale = Math.max(scaleX, scaleY) || 1
                     const bgW = crop.originalWidth * scale
                     const bgH = crop.originalHeight * scale
                     // center-based positioning: align crop center to container center
@@ -302,35 +342,35 @@ function Principal() {
 
       {/* Derecha: Mods del personaje seleccionado */}
       <section className="mods-panel">
-        <div className="panel-header">
-          <h3>Mods {selectedChar ? `· ${selectedChar}` : ''}</h3>
-          <div className="spacer" />
-          <button onClick={addMod} disabled={!selectedChar}>+ Agregar Mod (ZIP/7z)</button>
-        </div>
         {!selectedChar && <div className="empty-hint">Selecciona un personaje a la izquierda.</div>}
         {selectedChar && (
           <div className="mods-grid">
             {mods.map((m) => (
               <div key={m.folder} className="mod-card">
-                <div className="mod-thumb" onClick={() => window.api.openFolder(selectedChar, m.folder)}>
-                  {modImgSrcs[m.dir] ? (
-                    <div style={{ width: '100%', height: '100%', backgroundImage: `url(${modImgSrcs[m.dir]})`, backgroundRepeat: 'no-repeat', backgroundSize: 'cover', backgroundPosition: '50% 50%' }} />
+                <div className="mod-thumb" onClick={() => { const key = m.dir + '::' + m.folder; if (modImgSrcs[key]) { setPreviewSrc(modImgSrcs[key]); setShowPreview(true) } }}>
+                  {(() => { const key = m.dir + '::' + m.folder; const src = modImgSrcs[key]; return src ? (
+                    <div style={{ width: '100%', height: '100%', backgroundImage: `url(${src})`, backgroundRepeat: 'no-repeat', backgroundSize: 'cover', backgroundPosition: '50% 50%' }} />
                   ) : (
                     <div className="placeholder">Sin imagen</div>
-                  )}
+                  ) })()}
                 </div>
                 <div className="mod-info">
-                  <div className="mod-name">{m.meta.name || m.folder}</div>
-                  {m.meta.pageUrl ? (
-                    <a href="#" onClick={(e) => { e.preventDefault(); window.api.openModPage(selectedChar, m.folder) }} title={m.meta.pageUrl}>
-                      {m.meta.pageUrl}
+                  <div className="mod-name">{modInternalNames[m.dir + '::' + m.folder] || m.meta.name || m.folder}</div>
+                  <div className="muted" title={m.folder}>{m.folder}</div>
+                  {(() => { const url = modPageUrls[m.dir + '::' + m.folder]; return url ? (
+                    <a href="#" onClick={(e) => { e.preventDefault(); window.api.openModPage(selectedChar, m.folder) }} title={url}>
+                      {url}
                     </a>
-                  ) : (
-                    <div className="muted">Sin URL</div>
-                  )}
+                  ) : <div className="muted">Sin URL</div> })()}
                 </div>
                 <div className="mod-actions">
                   <button onClick={() => editMeta(m)}>Editar</button>
+                  <button onClick={() => window.api.openFolder(selectedChar, m.folder)}>Carpeta</button>
+                  {m.meta.enabled ? (
+                    <button onClick={async () => { await window.api.disableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Desactivar</button>
+                  ) : (
+                    <button onClick={async () => { await window.api.enableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Activar</button>
+                  )}
                   <button className="danger" onClick={() => removeMod(m)}>Eliminar</button>
                 </div>
               </div>
@@ -405,6 +445,20 @@ function Principal() {
             await refreshAll()
           }}
         />
+      )}
+      {showPreview && (
+        <div className="overlay" onClick={() => setShowPreview(false)}>
+          <div className="preview-box" onClick={(e) => e.stopPropagation()}>
+            {previewSrc ? (
+              <>
+                <img className="preview-img" src={previewSrc} alt="Vista previa" />
+                <button className="preview-close" onClick={() => setShowPreview(false)}>×</button>
+              </>
+            ) : (
+              <div className="placeholder">Sin imagen</div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   )

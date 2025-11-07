@@ -17,6 +17,7 @@ export default function Editar({ currentName, onClose, onUpdated }: Props) {
   const [imgOk, setImgOk] = useState(true)
   // Keep a source data URL for cropping (from saved image or fetched URL)
   const [srcDataUrl, setSrcDataUrl] = useState<string>('')
+  const [oldImagePath, setOldImagePath] = useState<string | null>(null)
   const [crop, setCrop] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
   const [croppedArea, setCroppedArea] = useState<{ width: number; height: number; x: number; y: number } | null>(null)
@@ -35,6 +36,7 @@ export default function Editar({ currentName, onClose, onUpdated }: Props) {
         if (info.imagePath) {
           const data = await window.api.readImageAsDataUrl(info.imagePath)
           if (!cancelled && data) setSrcDataUrl(data)
+          if (!cancelled) setOldImagePath(info.imagePath)
         }
       } catch {}
     }
@@ -92,13 +94,18 @@ export default function Editar({ currentName, onClose, onUpdated }: Props) {
       }
       const u = imageUrl.trim()
       try {
+        let newImagePath: string | null = null
         if (srcDataUrl && croppedArea) {
           // Save FULL image and persist crop meta in JSON
           const crop = await buildCropMeta(srcDataUrl, croppedArea)
-          await window.api.saveImageFromDataUrl(newName, srcDataUrl, u || undefined, crop)
+          newImagePath = await window.api.saveImageFromDataUrl(newName, srcDataUrl, u || undefined, crop)
         } else if (u) {
           // Save full image from URL; no crop meta if none chosen
-          await window.api.saveImageFromUrl(newName, u)
+          newImagePath = await window.api.saveImageFromUrl(newName, u)
+        }
+        // If a new image was saved and it differs from the previous one, delete the old file to save space
+        if (newImagePath && oldImagePath && newImagePath !== oldImagePath) {
+          try { await window.api.deleteFile(oldImagePath) } catch {}
         }
       } catch (e: any) {
         alert('Se actualizó el nombre, pero no se pudo guardar la imagen.\n' + (e?.message || e))

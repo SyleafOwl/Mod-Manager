@@ -43,42 +43,48 @@ export default function EditarMod({ character, mod, onClose, onSaved }: Props) {
     }
   }, [mod.folder])
 
-  const [pageUrl, setPageUrl] = useState(mod.meta.pageUrl || '')
+  const [pageUrl, setPageUrl] = useState('')
   const [imageUrl, setImageUrl] = useState('')
+  const [internalName, setInternalName] = useState<string>('')
   const [imgOk, setImgOk] = useState(true)
   const [srcDataUrl, setSrcDataUrl] = useState<string>('')
   const [previewFromUrl, setPreviewFromUrl] = useState(false)
 
-  // Load existing preview image from disk if present
+  // Load existing preview image. For flat mods (no meta.image), read preview from inside archive.
   useEffect(() => {
     let cancelled = false
     async function loadImage() {
       const rel = mod.meta.image
-      if (!rel) { setSrcDataUrl(''); return }
       try {
-        const abs = `${mod.dir.replace(/\\/g, '/')}/${rel}`
-        const data = await window.api.readImageAsDataUrl(abs)
-        if (!cancelled && data) setSrcDataUrl(data)
-      } catch {
-        if (!cancelled) setSrcDataUrl('')
-      }
+        if (!rel) {
+          const data = await window.api.getModPreviewDataUrl(character, mod.folder)
+          if (!cancelled) setSrcDataUrl(data || '')
+        } else {
+          const abs = `${mod.dir.replace(/\\/g, '/')}/${rel}`
+          const data = await window.api.readImageAsDataUrl(abs)
+          if (!cancelled) setSrcDataUrl(data || '')
+        }
+      } catch { if (!cancelled) setSrcDataUrl('') }
     }
     loadImage()
     return () => { cancelled = true }
-  }, [mod.dir, mod.meta.image])
+  }, [character, mod.folder, mod.dir, mod.meta.image])
 
-  // Load imageUrl (and optionally pageUrl) from the character DataBase JSON if present
+  // Load data (pageUrl, imageUrl) and internal primary item from archive
   useEffect(() => {
     let cancelled = false
-    async function loadDb() {
+    async function load() {
       try {
-        const entry = await window.api.getModEntryFromDatabase(character, mod.folder)
-        if (cancelled) return
-        if (entry?.imageUrl) setImageUrl((prev) => prev || entry.imageUrl || '')
-        if (!pageUrl && entry?.pageUrl) setPageUrl(entry.pageUrl)
+        const data = await window.api.getModData(character, mod.folder)
+        if (!cancelled && data) {
+          if (data.pageUrl) setPageUrl(data.pageUrl)
+          if (data.imageUrl) setImageUrl(data.imageUrl)
+        }
+        const internal = await window.api.getPrimaryInternalName(character, mod.folder)
+        if (!cancelled && internal) setInternalName(internal)
       } catch {}
     }
-    loadDb()
+    load()
     return () => { cancelled = true }
   }, [character, mod.folder])
 
@@ -118,18 +124,25 @@ export default function EditarMod({ character, mod, onClose, onSaved }: Props) {
       } else if (imageUrl.trim()) {
         imageRel = await window.api.saveModImageFromUrl(character, mod.folder, imageUrl.trim())
       }
-
-      await window.api.saveModMetadata(character, mod.folder, {
-        name: mod.folder,
-        pageUrl: pageUrl.trim() || undefined,
-        // If a new image was saved, update the meta.image reference
-        image: imageRel || mod.meta.image || undefined,
-      })
-      // Keep the character DataBase (<Personaje>.txt mods[]) in sync for this mod entry
-      await window.api.updateModEntryInDatabase(character, mod.folder, {
+      // Persist data file into archive
+      await window.api.setModData(character, mod.folder, {
         pageUrl: pageUrl.trim() || undefined,
         imageUrl: imageUrl.trim() || undefined,
       })
+      // Rename internal if changed
+      if (internalName.trim()) {
+        try { await window.api.renamePrimaryInternal(character, mod.folder, internalName.trim()) } catch {}
+      }
+      // Legacy folder metadata update (if present)
+      await window.api.saveModMetadata(character, mod.folder, {
+        name: mod.folder,
+        image: imageRel || mod.meta.image || undefined,
+      })
+      // If a new image file replaced the previous one, remove the old file to save space
+      if (imageRel && mod.meta.image && imageRel !== mod.meta.image) {
+  const oldAbs = `${mod.dir.replace(/\\/g, '/')}/${mod.meta.image}`
+        try { await window.api.deleteFile(oldAbs) } catch {}
+      }
       await onSaved?.()
     } finally {
       onClose()
@@ -167,7 +180,13 @@ export default function EditarMod({ character, mod, onClose, onSaved }: Props) {
             <div className="muted" style={{ fontSize: 12, textAlign: 'center' }}>Vista previa sin recorte (se ajusta al contenedor).</div>
           </div>
 
-          {/* File name (read-only). Using folder name as stable fallback. */}
+          {/* Internal name editable */}
+          <div className="field-row">
+            <div className="label">Nombre del Mod</div>
+            <input value={internalName} onChange={(e) => setInternalName(e.target.value)} placeholder="Carpeta/archivo principal" />
+          </div>
+
+          {/* File name (read-only). Using folder base name fallback. */}
           <div className="field-row">
             <div className="label">Nombre del archivo</div>
             <input value={fileName} readOnly />
