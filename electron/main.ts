@@ -33,6 +33,7 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+let splash: BrowserWindow | null = null
 let watcher: fs.FSWatcher | null = null
 
 function createWindow() {
@@ -43,6 +44,7 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     autoHideMenuBar: true,
+    show: false, // show after renderer notifies ready (or fallback)
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
     },
@@ -52,9 +54,17 @@ function createWindow() {
   try { Menu.setApplicationMenu(null) } catch {}
   try { win.setMenuBarVisibility(false) } catch {}
 
-  // Test active push message to Renderer-process.
+  // When main has finished loading, set a fallback to show the window in case renderer never notifies ready
   win.webContents.on('did-finish-load', () => {
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
+    // Fallback: show main after a short delay if splash hasn't been closed yet
+    setTimeout(() => {
+      if (win && !win.isVisible()) {
+        try { win.show() } catch {}
+        try { splash?.close() } catch {}
+        splash = null
+      }
+    }, 7000)
   })
 
   if (VITE_DEV_SERVER_URL) {
@@ -83,12 +93,40 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(createWindow)
+function createSplashWindow() {
+  try { splash?.close() } catch {}
+  const splashPath = path.join(process.env.VITE_PUBLIC, 'splash.html')
+  splash = new BrowserWindow({
+    width: 460,
+    height: 140,
+    frame: false,
+    resizable: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    center: true,
+    show: true,
+    skipTaskbar: true,
+  })
+  try { splash.loadFile(splashPath) } catch {}
+}
+
+app.whenReady().then(() => {
+  createSplashWindow()
+  createWindow()
+})
 
 // Start FS watcher when modsRoot exists
 app.whenReady().then(async () => {
   const { modsRoot } = await readSettings()
   if (modsRoot) setupWatcher(modsRoot)
+})
+
+// Renderer will notify when initial data is loaded; then close splash and show main
+ipcMain.on('renderer:ready', () => {
+  try { win?.show() } catch {}
+  try { splash?.close() } catch {}
+  splash = null
 })
 
 // --------------------------- Helpers ---------------------------

@@ -58,6 +58,7 @@ declare global {
 			fetchImageDataUrl(url: string): Promise<string>
 			saveImageFromDataUrl(character: string, dataUrl: string, sourceUrl?: string, crop?: any): Promise<string>
 			getCharacterInfo(character: string): Promise<{ imagePath: string | null; url: string | null; crop?: any }>
+			notifyReady(): void
 				onFsChanged(cb: (payload: any) => void): () => void
 		}
 	}

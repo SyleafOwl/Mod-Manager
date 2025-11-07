@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './Principal.css'
 import Actualizar from './Actualizar'
 import Configuracion from './Configuracion'
@@ -51,6 +51,7 @@ function Principal() {
   const [modToEdit, setModToEdit] = useState<ModItem | null>(null)
   const [modToDelete, setModToDelete] = useState<string>('')
   const [pendingMod, setPendingMod] = useState<{ archivePath: string; archiveFileName: string } | null>(null)
+  const readyRef = useRef(false)
   const hasRoot = useMemo(() => !!settings.modsRoot, [settings])
 
   useEffect(() => {
@@ -113,6 +114,10 @@ function Principal() {
     const map: Record<string, string> = {}
     for (const [dir, src] of entries) { if (src) map[dir] = src }
     setModImgSrcs(map)
+    if (!readyRef.current) {
+      try { window.api.notifyReady() } catch {}
+      readyRef.current = true
+    }
   }
 
   async function refreshAll() {
@@ -187,7 +192,7 @@ function Principal() {
 
   const header = (
     <header className="header">
-      <div className="title">Syleaf Mod Manager for ZZZ</div>
+  <div className="title">Mod Manager by Syleaf</div>
       <div className="update-wrapper"><button onClick={() => setShowUpdatePanel(v => !v)} title="Actualizar">↻ Actualizar</button>{showUpdatePanel && (
         <Actualizar
           onAfterAction={refreshAll}

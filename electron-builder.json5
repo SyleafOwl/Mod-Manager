@@ -1,11 +1,12 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "com.syleaf.zzz-mod-manager",
+  "appId": "com.syleaf.mod-manager",
   "asar": true,
-  "productName": "Syleaf Mod Manager for ZZZ",
+  "productName": "Mod Manager by Syleaf",
   "directories": {
-    "output": "release/${version}"
+    // Export builds to the user's Desktop
+    "output": "${env.USERPROFILE}/Desktop/ModManager-${version}"
   },
   "files": [
     "dist",

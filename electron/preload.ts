@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
   fetchImageDataUrl: (url: string) => ipcRenderer.invoke('images:fetchAsDataUrl', url),
   saveImageFromDataUrl: (character: string, dataUrl: string, sourceUrl?: string, crop?: any) => ipcRenderer.invoke('images:saveFromDataUrl', character, dataUrl, sourceUrl, crop),
   getCharacterInfo: (character: string) => ipcRenderer.invoke('database:getCharacterInfo', character),
+  // Notify main that the renderer finished initial loading
+  notifyReady: () => ipcRenderer.send('renderer:ready'),
   onFsChanged: (cb: (payload: any) => void) => {
     const handler = (_e: any, payload: any) => cb(payload)
     ipcRenderer.on('fs-changed', handler)
