@@ -58,6 +58,42 @@ function Principal() {
   const [showPreview, setShowPreview] = useState(false)
   const readyRef = useRef(false)
   const hasRoot = useMemo(() => !!settings.modsRoot, [settings])
+  // In-memory per-character cache (no files, no extra processes)
+  type CacheEntry = {
+    mods: ModItem[]
+    modImgSrcs: Record<string, string>
+    modInternalNames: Record<string, string>
+    modPageUrls: Record<string, string>
+    ts: number
+  }
+  const cacheRef = useRef<Map<string, CacheEntry>>(new Map())
+  const MAX_CACHE = 5
+
+  function applyCache(charName: string) {
+    const entry = cacheRef.current.get(charName)
+    if (!entry) return false
+    setMods(entry.mods)
+    setModImgSrcs(entry.modImgSrcs)
+    setModInternalNames(entry.modInternalNames)
+    setModPageUrls(entry.modPageUrls)
+    // touch LRU timestamp
+    entry.ts = Date.now()
+    cacheRef.current.set(charName, entry)
+    return true
+  }
+
+  function writeCache(charName: string, entry: Omit<CacheEntry, 'ts'>) {
+    cacheRef.current.set(charName, { ...entry, ts: Date.now() })
+    // Enforce simple LRU by timestamp
+    if (cacheRef.current.size > MAX_CACHE) {
+      let oldestKey: string | null = null
+      let oldestTs = Number.POSITIVE_INFINITY
+      for (const [k, v] of cacheRef.current.entries()) {
+        if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k }
+      }
+      if (oldestKey) cacheRef.current.delete(oldestKey)
+    }
+  }
 
   useEffect(() => {
     window.api.getSettings().then((s) => setSettings(s))
@@ -70,7 +106,20 @@ function Principal() {
 
   useEffect(() => {
     if (!selectedChar || !hasRoot) return
-    refreshMods(selectedChar)
+    // If we have cache for this character, hydrate immediately to avoid blank flicker
+    const hadCache = applyCache(selectedChar)
+    if (!hadCache) {
+      // No cache yet: clear to avoid showing stale data
+      setMods([])
+      setModImgSrcs({})
+      setModInternalNames({})
+      setModPageUrls({})
+    }
+    // Guard against race conditions: capture a load identifier
+    const loadId = Date.now()
+    ;(async () => {
+      await refreshMods(selectedChar, loadId)
+    })()
   }, [selectedChar, hasRoot])
 
   async function refreshCharacters() {
@@ -103,8 +152,12 @@ function Principal() {
     setCharCrops(cropMap)
   }
 
-  async function refreshMods(characterFolder: string) {
+  const latestLoadRef = useRef<number>(0)
+  async function refreshMods(characterFolder: string, loadId?: number) {
+    if (loadId) latestLoadRef.current = loadId
     const list = await window.api.listMods(characterFolder)
+    // If another load started after this one, abort applying results
+    if (loadId && loadId !== latestLoadRef.current) return
     // active mods first
     list.sort((a: any, b: any) => {
       const ae = a?.meta?.enabled ? 1 : 0
@@ -112,7 +165,7 @@ function Principal() {
       if (ae !== be) return be - ae
       return (a.folder || '').localeCompare(b.folder || '', undefined, { sensitivity: 'base' })
     })
-  setMods(list)
+    setMods(list)
     // Build data URLs for mod preview images to avoid file:// restrictions in dev server
     const entries = await Promise.all(list.map(async (m) => {
       // For flat mods (no meta.image) attempt to pull preview from inside archive
@@ -128,14 +181,16 @@ function Principal() {
         return [m.dir + '::' + m.folder, dataUrl || ''] as const
       } catch { return [m.dir + '::' + m.folder, ''] as const }
     }))
+    if (loadId && loadId !== latestLoadRef.current) return
     const map: Record<string, string> = {}
-  for (const [key, src] of entries) { if (src) map[key] = src }
+    for (const [key, src] of entries) { if (src) map[key] = src }
     setModImgSrcs(map)
 
     // Load internal names and data (pageUrl)
     const nameEntries = await Promise.all(list.map(async (m) => {
       try { const n = await window.api.getPrimaryInternalName(characterFolder, m.folder); return [m.dir + '::' + m.folder, n || ''] as const } catch { return [m.dir + '::' + m.folder, ''] as const }
     }))
+    if (loadId && loadId !== latestLoadRef.current) return
     const namesMap: Record<string, string> = {}
     for (const [key, value] of nameEntries) { if (value) namesMap[key] = value }
     setModInternalNames(namesMap)
@@ -143,9 +198,18 @@ function Principal() {
     const dataEntries = await Promise.all(list.map(async (m) => {
       try { const d = await window.api.getModData(characterFolder, m.folder); return [m.dir + '::' + m.folder, d?.pageUrl || ''] as const } catch { return [m.dir + '::' + m.folder, ''] as const }
     }))
+    if (loadId && loadId !== latestLoadRef.current) return
     const urlsMap: Record<string, string> = {}
     for (const [key, url] of dataEntries) { if (url) urlsMap[key] = url }
     setModPageUrls(urlsMap)
+
+    // Write-through cache update (only if this load is current)
+    writeCache(characterFolder, {
+      mods: list,
+      modImgSrcs: map,
+      modInternalNames: namesMap,
+      modPageUrls: urlsMap,
+    })
 
     if (!readyRef.current) {
       try { window.api.notifyReady() } catch {}
@@ -156,6 +220,11 @@ function Principal() {
   async function refreshAll() {
     const chars = await window.api.listCharactersWithImages()
     setCharacters(chars)
+    // Purge cache entries for removed characters
+    const valid = new Set(chars.map(c => c.name))
+    for (const key of Array.from(cacheRef.current.keys())) {
+      if (!valid.has(key)) cacheRef.current.delete(key)
+    }
     // Also rebuild image data URLs for preview
     const entries = await Promise.all(chars.map(async (c) => {
       if (!c.imagePath) return [c.name, ''] as const
@@ -191,6 +260,8 @@ function Principal() {
     const folder = await window.api.selectFolder()
     if (!folder) return
     const s = await window.api.setModsRoot(folder)
+    // Root changed => clear caches completely
+    cacheRef.current.clear()
     setSettings(s)
   }
 
@@ -387,6 +458,7 @@ function Principal() {
             const prevRoot = settings.modsRoot
             setSettings(s)
             if (s.modsRoot !== prevRoot) {
+              cacheRef.current.clear()
               await refreshAll()
             }
           }}
@@ -407,6 +479,12 @@ function Principal() {
           currentName={selectedChar}
           onClose={() => setShowEditar(false)}
           onUpdated={async (newName) => {
+            // Rename: move cache entry to new key if present
+            const old = cacheRef.current.get(selectedChar)
+            if (old) {
+              cacheRef.current.delete(selectedChar)
+              cacheRef.current.set(newName, { ...old, ts: Date.now() })
+            }
             await refreshAll()
             setSelectedChar(newName)
           }}
@@ -418,7 +496,11 @@ function Principal() {
           archivePath={pendingMod.archivePath}
           archiveFileName={pendingMod.archiveFileName}
           onClose={() => { setShowAgregarMod(false); setPendingMod(null) }}
-          onSaved={async () => { await refreshMods(selectedChar) }}
+          onSaved={async () => {
+            // Invalidate cache for this character and refresh
+            cacheRef.current.delete(selectedChar)
+            await refreshMods(selectedChar)
+          }}
         />
       )}
       {showEliminarMod && selectedChar && modToDelete && (
@@ -426,7 +508,10 @@ function Principal() {
           character={selectedChar}
           modName={modToDelete}
           onClose={() => { setShowEliminarMod(false); setModToDelete('') }}
-          onDeleted={async () => { await refreshMods(selectedChar) }}
+          onDeleted={async () => {
+            cacheRef.current.delete(selectedChar)
+            await refreshMods(selectedChar)
+          }}
         />
       )}
       {showEditarMod && selectedChar && modToEdit && (
@@ -434,7 +519,10 @@ function Principal() {
           character={selectedChar}
           mod={modToEdit}
           onClose={() => { setShowEditarMod(false); setModToEdit(null) }}
-          onSaved={async () => { await refreshMods(selectedChar) }}
+          onSaved={async () => {
+            cacheRef.current.delete(selectedChar)
+            await refreshMods(selectedChar)
+          }}
         />
       )}
       {showEliminar && selectedChar && (
@@ -442,6 +530,7 @@ function Principal() {
           character={selectedChar}
           onClose={() => setShowEliminar(false)}
           onDeleted={async () => {
+            cacheRef.current.delete(selectedChar)
             await refreshAll()
           }}
         />
