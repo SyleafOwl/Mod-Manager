@@ -38,6 +38,7 @@ function Principal() {
   const [characters, setCharacters] = useState<CharacterItem[]>([])
   const [selectedChar, setSelectedChar] = useState<string>('')
   const [mods, setMods] = useState<ModItem[]>([])
+  const [isLoadingMods, setIsLoadingMods] = useState(false)
   const [modImgSrcs, setModImgSrcs] = useState<Record<string, string>>({})
   const [modInternalNames, setModInternalNames] = useState<Record<string, string>>({})
   const [modPageUrls, setModPageUrls] = useState<Record<string, string>>({})
@@ -114,6 +115,7 @@ function Principal() {
       setModImgSrcs({})
       setModInternalNames({})
       setModPageUrls({})
+      setIsLoadingMods(true)
     }
     // Guard against race conditions: capture a load identifier
     const loadId = Date.now()
@@ -166,50 +168,82 @@ function Principal() {
       return (a.folder || '').localeCompare(b.folder || '', undefined, { sensitivity: 'base' })
     })
     setMods(list)
-    // Build data URLs for mod preview images to avoid file:// restrictions in dev server
-    const entries = await Promise.all(list.map(async (m) => {
-      // For flat mods (no meta.image) attempt to pull preview from inside archive
-      if (!m.meta.image) {
-        try {
-          const dataUrl = await window.api.getModPreviewDataUrl(characterFolder, m.folder)
-          return [m.dir + '::' + m.folder, dataUrl || ''] as const
-        } catch { return [m.dir + '::' + m.folder, ''] as const }
-      }
-      try {
-        const abs = `${m.dir.replace(/\\/g, '/')}/${m.meta.image}`
-        const dataUrl = await window.api.readImageAsDataUrl(abs)
-        return [m.dir + '::' + m.folder, dataUrl || ''] as const
-      } catch { return [m.dir + '::' + m.folder, ''] as const }
-    }))
-    if (loadId && loadId !== latestLoadRef.current) return
-    const map: Record<string, string> = {}
-    for (const [key, src] of entries) { if (src) map[key] = src }
-    setModImgSrcs(map)
-
-    // Load internal names and data (pageUrl)
-    const nameEntries = await Promise.all(list.map(async (m) => {
-      try { const n = await window.api.getPrimaryInternalName(characterFolder, m.folder); return [m.dir + '::' + m.folder, n || ''] as const } catch { return [m.dir + '::' + m.folder, ''] as const }
-    }))
-    if (loadId && loadId !== latestLoadRef.current) return
+    // Incremental loading with limited concurrency to reduce I/O spikes
+    const CONCURRENCY = 4
+    // Local maps so we can write cache at the end, while updating UI progressively
+    const imgMap: Record<string, string> = {}
     const namesMap: Record<string, string> = {}
-    for (const [key, value] of nameEntries) { if (value) namesMap[key] = value }
-    setModInternalNames(namesMap)
-
-    const dataEntries = await Promise.all(list.map(async (m) => {
-      try { const d = await window.api.getModData(characterFolder, m.folder); return [m.dir + '::' + m.folder, d?.pageUrl || ''] as const } catch { return [m.dir + '::' + m.folder, ''] as const }
-    }))
-    if (loadId && loadId !== latestLoadRef.current) return
     const urlsMap: Record<string, string> = {}
-    for (const [key, url] of dataEntries) { if (url) urlsMap[key] = url }
-    setModPageUrls(urlsMap)
 
-    // Write-through cache update (only if this load is current)
+    // Prime state with empty maps (or keep existing if we had cache)
+    // We won't clear existing maps here to avoid flicker; we'll merge updates progressively
+
+    const tasks = list.map((m) => async () => {
+      const key = m.dir + '::' + m.folder
+      if (loadId && loadId !== latestLoadRef.current) return
+      // 1) Preview image
+      try {
+        let dataUrl = ''
+        if (!m.meta.image) {
+          dataUrl = (await window.api.getModPreviewDataUrl(characterFolder, m.folder)) || ''
+        } else {
+          const abs = `${m.dir.replace(/\\/g, '/')}/${m.meta.image}`
+          dataUrl = (await window.api.readImageAsDataUrl(abs)) || ''
+        }
+        if (dataUrl) {
+          imgMap[key] = dataUrl
+          if (!loadId || loadId === latestLoadRef.current) {
+            setModImgSrcs((prev) => (prev[key] ? prev : { ...prev, [key]: dataUrl }))
+          }
+        }
+      } catch {}
+      if (loadId && loadId !== latestLoadRef.current) return
+      // 2) Internal name
+      try {
+        const n = (await window.api.getPrimaryInternalName(characterFolder, m.folder)) || ''
+        if (n) {
+          namesMap[key] = n
+          if (!loadId || loadId === latestLoadRef.current) {
+            setModInternalNames((prev) => (prev[key] ? prev : { ...prev, [key]: n }))
+          }
+        }
+      } catch {}
+      if (loadId && loadId !== latestLoadRef.current) return
+      // 3) Page URL
+      try {
+        const d = await window.api.getModData(characterFolder, m.folder)
+        const url = d?.pageUrl || ''
+        if (url) {
+          urlsMap[key] = url
+          if (!loadId || loadId === latestLoadRef.current) {
+            setModPageUrls((prev) => (prev[key] ? prev : { ...prev, [key]: url }))
+          }
+        }
+      } catch {}
+    })
+
+    async function runLimited(fns: Array<() => Promise<void>>, limit: number) {
+      let idx = 0
+      const workers = Array(Math.min(limit, fns.length)).fill(0).map(async () => {
+        while (idx < fns.length) {
+          const cur = idx++
+          await fns[cur]()
+        }
+      })
+      await Promise.all(workers)
+    }
+
+    await runLimited(tasks, CONCURRENCY)
+    if (loadId && loadId !== latestLoadRef.current) return
+
+    // Final cache write-through with full maps
     writeCache(characterFolder, {
       mods: list,
-      modImgSrcs: map,
-      modInternalNames: namesMap,
-      modPageUrls: urlsMap,
+      modImgSrcs: { ...modImgSrcs, ...imgMap },
+      modInternalNames: { ...modInternalNames, ...namesMap },
+      modPageUrls: { ...modPageUrls, ...urlsMap },
     })
+    if (!loadId || loadId === latestLoadRef.current) setIsLoadingMods(false)
 
     if (!readyRef.current) {
       try { window.api.notifyReady() } catch {}
@@ -416,6 +450,12 @@ function Principal() {
         {!selectedChar && <div className="empty-hint">Selecciona un personaje a la izquierda.</div>}
         {selectedChar && (
           <div className="mods-grid">
+            {isLoadingMods && mods.length === 0 && (
+              <div className="loading-state">
+                <div className="spinner" />
+                <div>Cargando mods…</div>
+              </div>
+            )}
             {mods.map((m) => (
               <div key={m.folder} className="mod-card">
                 <div className="mod-thumb" onClick={() => { const key = m.dir + '::' + m.folder; if (modImgSrcs[key]) { setPreviewSrc(modImgSrcs[key]); setShowPreview(true) } }}>
@@ -438,9 +478,9 @@ function Principal() {
                   <button onClick={() => editMeta(m)}>Editar</button>
                   <button onClick={() => window.api.openFolder(selectedChar, m.folder)}>Carpeta</button>
                   {m.meta.enabled ? (
-                    <button onClick={async () => { await window.api.disableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Desactivar</button>
+                    <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.disableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Desactivar</button>
                   ) : (
-                    <button onClick={async () => { await window.api.enableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Activar</button>
+                    <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.enableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Activar</button>
                   )}
                   <button className="danger" onClick={() => removeMod(m)}>Eliminar</button>
                 </div>

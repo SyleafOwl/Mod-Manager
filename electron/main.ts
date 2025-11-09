@@ -953,26 +953,10 @@ ipcMain.handle('mods:list', async (_e, character: string) => {
       const meta = await readModMeta(mdir)
       const imgCandidates = ['preview.png', 'preview.jpg', 'cover.png', 'cover.jpg']
       const img = meta.image && fs.existsSync(path.join(mdir, meta.image)) ? meta.image : imgCandidates.find((f) => fs.existsSync(path.join(mdir, f)))
-      let enabled = true
-      let archiveName: string | null = null
-      try {
-        const files = await fsp.readdir(mdir)
-        const archives = files.filter((f) => /\.(zip|7z|rar)$/i.test(f))
-        const exactActive = archives.find((f) => {
-          const ext = path.extname(f)
-          const base = path.basename(f, ext)
-          return !/^DISABLED_/i.test(f) && base.toLowerCase() === entry.toLowerCase()
-        })
-        const exactDisabled = archives.find((f) => {
-          const ext = path.extname(f)
-          const base = path.basename(f.replace(/^DISABLED_/i, ''), ext)
-          return /^DISABLED_/i.test(f) && base.toLowerCase() === entry.toLowerCase()
-        })
-        archiveName = exactActive || exactDisabled || archives[0] || null
-        if (archives.length > 0) enabled = archives.some((f) => !/^DISABLED_/i.test(f))
-      } catch {}
-      mods.push({ folder: entry, dir: mdir, meta: { ...meta, image: img, enabled }, archive: archiveName })
-      seen.add(entry.toLowerCase())
+      // New rule: folder name prefixed with DISABLED_ marks it disabled; we ignore inner archive naming now
+      const enabled = !/^DISABLED_/i.test(entry)
+      mods.push({ folder: entry, dir: mdir, meta: { ...meta, image: img, enabled }, archive: null })
+      seen.add(entry.replace(/^DISABLED_/i, '').toLowerCase())
     }
     // 2. New flat archives directly inside the character directory (no per-mod folder)
     for (const entry of entries) {
@@ -1048,42 +1032,47 @@ ipcMain.handle('mods:enable', async (_e, character: string, modName: string) => 
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
   if (!character?.trim() || !modName?.trim()) throw new Error('Character and modName are required')
-  const mdir = modDir(modsRoot, character, modName)
-  if (!isDirectory(mdir)) {
-    // Flat fallback
-    const cdir = characterDir(modsRoot, character)
-    const files = await fsp.readdir(cdir)
-    const target = files.find((f) => /^DISABLED_/i.test(f) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
-      || files.find((f) => /^DISABLED_/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
-    if (!target) return false
-    const from = path.join(cdir, target)
-    const to = path.join(cdir, target.replace(/^DISABLED_/i, ''))
-    try { await fsp.rm(to, { force: true }) } catch {}
-    await fsp.rename(from, to)
-    try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+  const cdir = characterDir(modsRoot, character)
+  // Normalize: allow passing folder name with or without DISABLED_ prefix
+  const rawName = modName.replace(/^DISABLED_/i, '')
+  // Try to locate the directory among both enabled and disabled variants (case-insensitive)
+  const candidateEnabled = modDir(modsRoot, character, rawName)
+  const candidateDisabled = modDir(modsRoot, character, `DISABLED_${rawName}`)
+  let realDir: string | null = null
+  if (isDirectory(candidateEnabled)) realDir = candidateEnabled
+  else if (isDirectory(candidateDisabled)) realDir = candidateDisabled
+  if (realDir && isDirectory(realDir)) {
+    const baseFolder = path.basename(realDir)
+    if (/^DISABLED_/i.test(baseFolder)) {
+      const desiredBase = baseFolder.replace(/^DISABLED_/i, '')
+      let target = modDir(modsRoot, character, desiredBase)
+      if (target === realDir) return true
+      // Collision handling: append (n) until unique
+      if (isDirectory(target)) {
+        let i = 2
+        while (isDirectory(target)) {
+          target = modDir(modsRoot, character, `${desiredBase} (${i++})`)
+        }
+      }
+      await fsp.rename(realDir, target)
+      try { await writeModMeta(target, { name: path.basename(target), enabled: true }) } catch {}
+      try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+      return true
+    }
+    // Already enabled folder
+    try { await writeModMeta(realDir, { name: rawName, enabled: true }) } catch {}
     return true
   }
-  // Legacy folder case
-  try {
-    const files = await fsp.readdir(mdir)
-    const archives = files.filter((f) => /(zip|7z|rar)$/i.test(path.extname(f)))
-    // Prefer enabling the archive whose base name matches the mod folder name; fallback to first disabled archive
-    const disabledArchives = archives.filter((f) => /^DISABLED_/i.test(f))
-    const target = disabledArchives.find((f) => {
-      const ext = path.extname(f)
-      const base = path.basename(f.replace(/^DISABLED_/i, ''), ext)
-      return base.toLowerCase() === modName.toLowerCase()
-    }) || disabledArchives[0]
-
-    if (target) {
-      const from = path.join(mdir, target)
-      const to = path.join(mdir, target.replace(/^DISABLED_/i, ''))
-      try { await fsp.rm(to, { force: true }) } catch {}
-      await fsp.rename(from, to)
-    }
-    await writeModMeta(mdir, { name: modName, enabled: true })
-  } catch {}
-  try { win?.webContents.send('fs-changed', { root: path.dirname(mdir) }) } catch {}
+  // Flat archive fallback: remove DISABLED_ prefix from archive filename
+  const files = await fsp.readdir(cdir)
+  const targetArch = files.find((f) => /^DISABLED_/i.test(f) && f.replace(/^DISABLED_/i, '').replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === rawName.toLowerCase())
+    || files.find((f) => /^DISABLED_/i.test(f) && f.toLowerCase().includes(rawName.toLowerCase()))
+  if (!targetArch) return false
+  const from = path.join(cdir, targetArch)
+  const to = path.join(cdir, targetArch.replace(/^DISABLED_/i, ''))
+  try { await fsp.rm(to, { force: true }) } catch {}
+  await fsp.rename(from, to)
+  try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
   return true
 })
 
@@ -1109,43 +1098,44 @@ ipcMain.handle('mods:disable', async (_e, character: string, modName: string) =>
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
   if (!character?.trim() || !modName?.trim()) throw new Error('Character and modName are required')
-  const mdir = modDir(modsRoot, character, modName)
-  if (!isDirectory(mdir)) {
-    // Flat fallback
-    const cdir = characterDir(modsRoot, character)
-    const files = await fsp.readdir(cdir)
-    const target = files.find((f) => !/^DISABLED_/i.test(f) && f.replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === modName.toLowerCase())
-      || files.find((f) => !/^DISABLED_/i.test(f) && f.toLowerCase().includes(modName.toLowerCase()))
-    if (!target) return false
-    const from = path.join(cdir, target)
-    const to = path.join(cdir, `DISABLED_${target}`)
-    try { await fsp.rm(to, { force: true }) } catch {}
-    await fsp.rename(from, to)
-    try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+  const cdir = characterDir(modsRoot, character)
+  const rawName = modName.replace(/^DISABLED_/i, '')
+  const candidateEnabled = modDir(modsRoot, character, rawName)
+  const candidateDisabled = modDir(modsRoot, character, `DISABLED_${rawName}`)
+  let realDir: string | null = null
+  if (isDirectory(candidateEnabled)) realDir = candidateEnabled
+  else if (isDirectory(candidateDisabled)) realDir = candidateDisabled
+  if (realDir && isDirectory(realDir)) {
+    const baseFolder = path.basename(realDir)
+    if (!/^DISABLED_/i.test(baseFolder)) {
+      const target = modDir(modsRoot, character, `DISABLED_${baseFolder}`)
+      // Collision safety: if target exists for some reason, append numeric suffix
+      let finalTarget = target
+      if (isDirectory(finalTarget)) {
+        let i = 2
+        while (isDirectory(finalTarget)) {
+          finalTarget = modDir(modsRoot, character, `DISABLED_${baseFolder} (${i++})`)
+        }
+      }
+      await fsp.rename(realDir, finalTarget)
+      try { await writeModMeta(finalTarget, { name: baseFolder, enabled: false }) } catch {}
+      try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
+      return true
+    }
+    // Already disabled
+    try { await writeModMeta(realDir, { name: rawName, enabled: false }) } catch {}
     return true
   }
-  // Legacy folder case
-  try {
-    const files = await fsp.readdir(mdir)
-    const archives = files.filter((f) => /(zip|7z|rar)$/i.test(path.extname(f)))
-    // Prefer disabling the archive whose base name matches the mod folder name; fallback to first enabled archive
-    const enabledArchives = archives.filter((f) => !/^DISABLED_/i.test(f))
-    const target = enabledArchives.find((f) => {
-      const ext = path.extname(f)
-      const base = path.basename(f, ext)
-      return base.toLowerCase() === modName.toLowerCase()
-    }) || enabledArchives[0]
-
-    if (target) {
-      const from = path.join(mdir, target)
-      const to = path.join(mdir, `DISABLED_${target}`)
-      try { await fsp.rm(to, { force: true }) } catch {}
-      await fsp.rename(from, to)
-    }
-    await writeModMeta(mdir, { name: modName, enabled: false })
-  } catch {}
-  // Notify renderer
-  try { win?.webContents.send('fs-changed', { root: path.dirname(mdir) }) } catch {}
+  // Flat archive fallback: add DISABLED_ prefix to archive filename
+  const files = await fsp.readdir(cdir)
+  const targetArch = files.find((f) => !/^DISABLED_/i.test(f) && f.replace(/\.(zip|7z|rar)$/i, '').toLowerCase() === rawName.toLowerCase())
+    || files.find((f) => !/^DISABLED_/i.test(f) && f.toLowerCase().includes(rawName.toLowerCase()))
+  if (!targetArch) return false
+  const from = path.join(cdir, targetArch)
+  const to = path.join(cdir, `DISABLED_${targetArch}`)
+  try { await fsp.rm(to, { force: true }) } catch {}
+  await fsp.rename(from, to)
+  try { win?.webContents.send('fs-changed', { root: cdir }) } catch {}
   return true
 })
 
