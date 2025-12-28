@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { FixedSizeList as List } from 'react-window'
 import './Principal.css'
 import Actualizar from './Actualizar'
 import Configuracion from './Configuracion'
@@ -69,6 +70,24 @@ function Principal() {
   }
   const cacheRef = useRef<Map<string, CacheEntry>>(new Map())
   const MAX_CACHE = 5
+
+  // Measure mods panel for virtualization dimensions
+  const modsPanelRef = useRef<HTMLDivElement | null>(null)
+  const [modsPanelDims, setModsPanelDims] = useState<{ width: number; height: number }>({ width: 360, height: 600 })
+  useEffect(() => {
+    const el = modsPanelRef.current
+    if (!el) return
+    const update = () => {
+      // Use clientWidth/Height directly (already excludes borders and scrollbar)
+      const width = Math.max(300, Math.floor(el.clientWidth))
+      const height = Math.max(300, Math.floor(el.clientHeight))
+      setModsPanelDims({ width, height })
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => { try { ro.disconnect() } catch {} }
+  }, [])
 
   function applyCache(charName: string) {
     const entry = cacheRef.current.get(charName)
@@ -290,6 +309,14 @@ function Principal() {
   else { setMods([]); setModImgSrcs({}) }
   }
 
+  // Customize react-window outer container to avoid horizontal scrollbars
+  const OuterContainer = React.forwardRef<HTMLDivElement, React.HTMLProps<HTMLDivElement>>((props, ref) => {
+    const style: React.CSSProperties = { ...(props.style || {}), overflowX: 'hidden', overflowY: 'auto' }
+    const className = ['mods-virtual-scroll', props.className].filter(Boolean).join(' ')
+    return <div ref={ref} {...props} className={className} style={style} />
+  })
+  OuterContainer.displayName = 'OuterContainer'
+
   async function pickRoot() {
     const folder = await window.api.selectFolder()
     if (!folder) return
@@ -446,47 +473,66 @@ function Principal() {
       </main>
 
       {/* Derecha: Mods del personaje seleccionado */}
-      <section className="mods-panel">
+      <section className="mods-panel" ref={modsPanelRef as any}>
         {!selectedChar && <div className="empty-hint">Selecciona un personaje a la izquierda.</div>}
         {selectedChar && (
-          <div className="mods-grid">
+          <div style={{ width: '100%', height: '100%' }}>
             {isLoadingMods && mods.length === 0 && (
               <div className="loading-state">
                 <div className="spinner" />
                 <div>Cargando mods…</div>
               </div>
             )}
-            {mods.map((m) => (
-              <div key={m.folder} className="mod-card">
-                <div className="mod-thumb" onClick={() => { const key = m.dir + '::' + m.folder; if (modImgSrcs[key]) { setPreviewSrc(modImgSrcs[key]); setShowPreview(true) } }}>
-                  {(() => { const key = m.dir + '::' + m.folder; const src = modImgSrcs[key]; return src ? (
-                    <div style={{ width: '100%', height: '100%', backgroundImage: `url(${src})`, backgroundRepeat: 'no-repeat', backgroundSize: 'cover', backgroundPosition: '50% 50%' }} />
-                  ) : (
-                    <div className="placeholder">Sin imagen</div>
-                  ) })()}
-                </div>
-                <div className="mod-info">
-                  <div className="mod-name">{modInternalNames[m.dir + '::' + m.folder] || m.meta.name || m.folder}</div>
-                  <div className="muted" title={m.folder}>{m.folder}</div>
-                  {(() => { const url = modPageUrls[m.dir + '::' + m.folder]; return url ? (
-                    <a href="#" onClick={(e) => { e.preventDefault(); window.api.openModPage(selectedChar, m.folder) }} title={url}>
-                      {url}
-                    </a>
-                  ) : <div className="muted">Sin URL</div> })()}
-                </div>
-                <div className="mod-actions">
-                  <button onClick={() => editMeta(m)}>Editar</button>
-                  <button onClick={() => window.api.openFolder(selectedChar, m.folder)}>Carpeta</button>
-                  {m.meta.enabled ? (
-                    <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.disableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Desactivar</button>
-                  ) : (
-                    <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.enableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Activar</button>
-                  )}
-                  <button className="danger" onClick={() => removeMod(m)}>Eliminar</button>
-                </div>
-              </div>
-            ))}
-            {mods.length === 0 && <div className="empty-hint">No hay mods para este personaje todavía.</div>}
+            {mods.length > 0 && (
+              <List
+                height={modsPanelDims.height}
+                width={modsPanelDims.width}
+                itemCount={mods.length}
+                itemSize={320}
+                outerElementType={OuterContainer}
+                className="mods-virtual-scroll"
+              >
+                {({ index, style }: { index: number; style: CSSProperties }) => {
+                  const m = mods[index]
+                  const key = m.dir + '::' + m.folder
+                  const src = modImgSrcs[key]
+                  const url = modPageUrls[key]
+                  return (
+                        <div style={{ ...style, padding: '0 0 0 0', display: 'flex', justifyContent: 'flex-start' }} key={m.folder}>
+                      <div className="mod-card">
+                        <div className="mod-thumb" onClick={() => { if (src) { setPreviewSrc(src); setShowPreview(true) } }}>
+                          {src ? (
+                            <div style={{ width: '100%', height: '100%', backgroundImage: `url(${src})`, backgroundRepeat: 'no-repeat', backgroundSize: 'cover', backgroundPosition: '50% 50%' }} />
+                          ) : (
+                            <div className="placeholder">Sin imagen</div>
+                          )}
+                        </div>
+                        <div className="mod-info">
+                          <div className="mod-name">{modInternalNames[key] || m.meta.name || m.folder}</div>
+                          <div className="muted" title={m.folder}>{m.folder}</div>
+                          {url ? (
+                            <a href="#" onClick={(e) => { e.preventDefault(); window.api.openModPage(selectedChar, m.folder) }} title={url}>
+                              {url}
+                            </a>
+                          ) : <div className="muted">Sin URL</div>}
+                        </div>
+                        <div className="mod-actions">
+                          <button onClick={() => editMeta(m)}>Editar</button>
+                          <button onClick={() => window.api.openFolder(selectedChar, m.folder)}>Carpeta</button>
+                          {m.meta.enabled ? (
+                            <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.disableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Desactivar</button>
+                          ) : (
+                            <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.enableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Activar</button>
+                          )}
+                          <button className="danger" onClick={() => removeMod(m)}>Eliminar</button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                }}
+              </List>
+            )}
+            {!isLoadingMods && mods.length === 0 && <div className="empty-hint">No hay mods para este personaje todavía.</div>}
           </div>
         )}
       </section>

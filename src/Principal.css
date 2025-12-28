@@ -81,14 +81,14 @@ body {
 .progress .bar { height: 100%; width: 40%; background: linear-gradient(90deg, #ff9f1a, #ffd166); animation: progressMove 1.2s linear infinite; }
 @keyframes progressMove { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
 
-.mods-panel { grid-area: mods; padding: 12px; border-left: 1px solid #3a3124; overflow: auto; }
+.mods-panel { grid-area: mods; padding: 8px 0 8px 0; border-left: 1px solid #3a3124; overflow: hidden; }
 .panel-header { display: flex; align-items: center; gap: 12px; margin-bottom: 0; padding: 8px 12px; border-bottom: none; background: transparent; }
 .panel-header h2, .panel-header h3 { margin: 0; }
 
 .characters-panel { grid-area: characters; padding: 16px; overflow: auto; }
 .subheader-left { grid-area: subheader-left; }
 .subheader-right { grid-area: subheader-right; border-left: 1px solid #3a3124; }
-.characters-grid { display: grid; grid-template-columns: repeat(auto-fill, calc(var(--char-thumb-width) + 2px)); gap: 12px; justify-content: center; }
+.characters-grid { display: grid; grid-template-columns: repeat(auto-fill, calc(var(--char-thumb-width) + 2px)); gap: 12px; justify-content: flex-start; }
 .char-card { background: var(--panel); border: 1px solid #3a3124; border-radius: var(--radius); padding: 0 0 8px 0; display: grid; gap: 0; cursor: pointer; justify-items: center; box-sizing: border-box; overflow: hidden; }
 .char-card:hover { border-color: #ffb84d66; }
 .char-card.active { outline: 2px solid var(--accent); }
@@ -99,8 +99,13 @@ body {
 
 .right-panel { display: none; }
 
+/* Virtualized list outer element styles to keep scrollbar at edge with a content gutter */
+.mods-virtual-scroll { overflow-y: auto; overflow-x: hidden; padding-right: 16px; scrollbar-gutter: stable; padding-left: 0; }
+.mods-virtual-scroll::-webkit-scrollbar-button:start:decrement,
+.mods-virtual-scroll::-webkit-scrollbar-button:end:increment { display: none; width: 0; height: 0; }
+
 .mods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
-.mod-card { background: var(--panel); border: 1px solid #3a3124; border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+.mod-card { background: var(--panel); border: 1px solid #3a3124; border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; width: 100%; max-width: none; margin: 0 0 16px 0; box-sizing: border-box; }
 .mod-thumb { height: 160px; background: #12100b; display: grid; place-items: center; cursor: pointer; }
 .mod-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .placeholder { color: var(--muted); font-size: 12px; }
@@ -122,12 +127,15 @@ body {
 
 /* Scrollbar styling for characters and mods panels */
 .characters-panel, .mods-panel { scrollbar-width: thin; scrollbar-color: #ffb84d66 transparent; }
-.characters-panel::-webkit-scrollbar, .mods-panel::-webkit-scrollbar { width: 10px; height: 10px; }
+.characters-panel, .mods-panel { scrollbar-gutter: stable both-edges; }
+.characters-panel::-webkit-scrollbar, .mods-panel::-webkit-scrollbar { width: 3px; height: 3px; }
+.characters-panel::-webkit-scrollbar-button, .mods-panel::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.characters-panel::-webkit-scrollbar-corner, .mods-panel::-webkit-scrollbar-corner { background: transparent; }
 .characters-panel::-webkit-scrollbar-track, .mods-panel::-webkit-scrollbar-track { background: transparent; }
 .characters-panel::-webkit-scrollbar-thumb, .mods-panel::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, #ffb84d, #ffd166);
-  border-radius: 8px;
-  border: 2px solid rgba(0,0,0,0.25); /* creates some spacing/track feel */
+  border-radius: 4px;
+  border: 2px solid transparent; /* keeps the thumb very thin visually */
 }
 .characters-panel::-webkit-scrollbar-thumb:hover, .mods-panel::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(180deg, #ffcf70, #ffe09a);

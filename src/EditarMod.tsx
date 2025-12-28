@@ -75,13 +75,17 @@ export default function EditarMod({ character, mod, onClose, onSaved }: Props) {
     let cancelled = false
     async function load() {
       try {
-        const data = await window.api.getModData(character, mod.folder)
-        if (!cancelled && data) {
-          if (data.pageUrl) setPageUrl(data.pageUrl)
-          if (data.imageUrl) setImageUrl(data.imageUrl)
+        const [data, internal] = await Promise.all([
+          window.api.getModData(character, mod.folder),
+          window.api.getPrimaryInternalName(character, mod.folder)
+        ])
+        if (!cancelled) {
+          if (data) {
+            if (data.pageUrl) setPageUrl(data.pageUrl)
+            if (data.imageUrl) setImageUrl(data.imageUrl)
+          }
+          if (internal) setInternalName(internal)
         }
-        const internal = await window.api.getPrimaryInternalName(character, mod.folder)
-        if (!cancelled && internal) setInternalName(internal)
       } catch {}
     }
     load()
@@ -172,7 +176,7 @@ export default function EditarMod({ character, mod, onClose, onSaved }: Props) {
               display: 'flex', alignItems: 'center', justifyContent: 'center'
             }}>
               {srcDataUrl ? (
-                <img src={srcDataUrl} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                <img src={srcDataUrl} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
               ) : (
                 <div style={{ color: '#999' }}>Vista previa</div>
               )}
