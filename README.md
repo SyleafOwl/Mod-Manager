@@ -1,6 +1,6 @@
 # Mod Manager by Syleaf
 
-Administrador de mods para Zenless Zone Zero (ZZZ). Organiza tus mods por personaje sin tocar ni ejecutar el juego. Hecho con Electron + React + TypeScript.
+Administrador de mods para Zenless Zone Zero (ZZZ) o Genshin Impact. Organiza tus mods por personaje sin tocar ni ejecutar el juego. Hecho con Electron + React + TypeScript.
 
 ## Cómo funciona
 
