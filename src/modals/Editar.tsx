@@ -21,7 +21,6 @@ export default function Editar({ currentName, onClose, onUpdated }: Props) {
   const [crop, setCrop] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
   const [croppedArea, setCroppedArea] = useState<{ width: number; height: number; x: number; y: number } | null>(null)
-  
 
   useEffect(() => { setName(currentName) }, [currentName])
 

@@ -81,7 +81,7 @@ body {
 .progress .bar { height: 100%; width: 40%; background: linear-gradient(90deg, #ff9f1a, #ffd166); animation: progressMove 1.2s linear infinite; }
 @keyframes progressMove { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
 
-.mods-panel { grid-area: mods; padding: 8px 0 8px 0; border-left: 1px solid #3a3124; overflow: hidden; }
+.mods-panel { grid-area: mods; padding: 8px 0 0 0; border-left: 1px solid #3a3124; overflow: hidden; }
 .panel-header { display: flex; align-items: center; gap: 12px; margin-bottom: 0; padding: 8px 12px; border-bottom: none; background: transparent; }
 .panel-header h2, .panel-header h3 { margin: 0; }
 

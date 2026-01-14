@@ -144,7 +144,7 @@ export default function EditarMod({ character, mod, onClose, onSaved }: Props) {
       })
       // If a new image file replaced the previous one, remove the old file to save space
       if (imageRel && mod.meta.image && imageRel !== mod.meta.image) {
-  const oldAbs = `${mod.dir.replace(/\\/g, '/')}/${mod.meta.image}`
+        const oldAbs = `${mod.dir.replace(/\\/g, '/')}/${mod.meta.image}`
         try { await window.api.deleteFile(oldAbs) } catch {}
       }
       await onSaved?.()

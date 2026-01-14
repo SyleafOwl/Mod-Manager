@@ -1,40 +1,21 @@
-import React, { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { FixedSizeList as List } from 'react-window'
-import './Principal.css'
-import Actualizar from './Actualizar'
-import Configuracion from './Configuracion'
-import Agregar from './Agregar'
-import Editar from './Editar'
-import Eliminar from './Eliminar'
-import AgregarMod from './AgregarMod'
-import EliminarMod from './EliminarMod'
-import EditarMod from './EditarMod'
-
-type ModMeta = {
-  name: string
-  version?: string
-  author?: string
-  description?: string
-  pageUrl?: string
-  updateUrl?: string
-  image?: string
-  enabled?: boolean
-  createdAt?: string
-  updatedAt?: string
-}
-
-type ModItem = {
-  folder: string
-  dir: string
-  meta: ModMeta
-  archive?: string | null
-}
+import { useEffect, useMemo, useRef, useState } from 'react'
+import './App.css'
+import Actualizar from './modals/Actualizar'
+import Configuracion from './modals/Configuracion'
+import Agregar from './modals/Agregar'
+import Editar from './modals/Editar'
+import Eliminar from './modals/Eliminar'
+import AgregarMod from './modals/AgregarMod'
+import EliminarMod from './modals/EliminarMod'
+import EditarMod from './modals/EditarMod'
+import BarraSuperior from './panels/BarraSuperior'
+import PersonajesPanel from './panels/PersonajesPanel'
+import ModsPanel from './panels/ModsPanel'
+import type { CharacterItem, CropMeta, ModItem } from './types'
 
 type Settings = { modsRoot?: string; imagesRoot?: string }
-type CharacterItem = { name: string; imagePath?: string }
-type CropMeta = { x: number; y: number; width: number; height: number; originalWidth: number; originalHeight: number; zoom?: number }
 
-function Principal() {
+function App() {
   const [settings, setSettings] = useState<Settings>({})
   const [characters, setCharacters] = useState<CharacterItem[]>([])
   const [selectedChar, setSelectedChar] = useState<string>('')
@@ -60,6 +41,7 @@ function Principal() {
   const [showPreview, setShowPreview] = useState(false)
   const readyRef = useRef(false)
   const hasRoot = useMemo(() => !!settings.modsRoot, [settings])
+
   // In-memory per-character cache (no files, no extra processes)
   type CacheEntry = {
     mods: ModItem[]
@@ -70,24 +52,6 @@ function Principal() {
   }
   const cacheRef = useRef<Map<string, CacheEntry>>(new Map())
   const MAX_CACHE = 5
-
-  // Measure mods panel for virtualization dimensions
-  const modsPanelRef = useRef<HTMLDivElement | null>(null)
-  const [modsPanelDims, setModsPanelDims] = useState<{ width: number; height: number }>({ width: 360, height: 600 })
-  useEffect(() => {
-    const el = modsPanelRef.current
-    if (!el) return
-    const update = () => {
-      // Use clientWidth/Height directly (already excludes borders and scrollbar)
-      const width = Math.max(300, Math.floor(el.clientWidth))
-      const height = Math.max(300, Math.floor(el.clientHeight))
-      setModsPanelDims({ width, height })
-    }
-    update()
-    const ro = new ResizeObserver(update)
-    ro.observe(el)
-    return () => { try { ro.disconnect() } catch {} }
-  }, [])
 
   function applyCache(charName: string) {
     const entry = cacheRef.current.get(charName)
@@ -193,9 +157,6 @@ function Principal() {
     const imgMap: Record<string, string> = {}
     const namesMap: Record<string, string> = {}
     const urlsMap: Record<string, string> = {}
-
-    // Prime state with empty maps (or keep existing if we had cache)
-    // We won't clear existing maps here to avoid flicker; we'll merge updates progressively
 
     const tasks = list.map((m) => async () => {
       const key = m.dir + '::' + m.folder
@@ -305,17 +266,9 @@ function Principal() {
     const names = chars.map(c => c.name)
     if (!cur || !names.includes(cur)) cur = names[0] || ''
     setSelectedChar(cur)
-  if (cur) await refreshMods(cur)
-  else { setMods([]); setModImgSrcs({}) }
+    if (cur) await refreshMods(cur)
+    else { setMods([]); setModImgSrcs({}) }
   }
-
-  // Customize react-window outer container to avoid horizontal scrollbars
-  const OuterContainer = React.forwardRef<HTMLDivElement, React.HTMLProps<HTMLDivElement>>((props, ref) => {
-    const style: React.CSSProperties = { ...(props.style || {}), overflowX: 'hidden', overflowY: 'auto' }
-    const className = ['mods-virtual-scroll', props.className].filter(Boolean).join(' ')
-    return <div ref={ref} {...props} className={className} style={style} />
-  })
-  OuterContainer.displayName = 'OuterContainer'
 
   async function pickRoot() {
     const folder = await window.api.selectFolder()
@@ -331,8 +284,8 @@ function Principal() {
     const archive = await window.api.selectArchive()
     if (!archive) return
     // Copy archive into a new mod folder named after archive
-  setPendingMod({ archivePath: archive, archiveFileName: archive.split(/[/\\]/).pop() || 'mod.zip' })
-  setShowAgregarMod(true)
+    setPendingMod({ archivePath: archive, archiveFileName: archive.split(/[/\\]/).pop() || 'mod.zip' })
+    setShowAgregarMod(true)
   }
 
   async function editMeta(mod: ModItem) {
@@ -346,8 +299,6 @@ function Principal() {
     setShowEliminarMod(true)
   }
 
-  // removed per UI change: no standalone update button
-
   useEffect(() => {
     if (!hasRoot) return
     const debounced = debounce(() => { refreshAll() }, 400)
@@ -356,22 +307,19 @@ function Principal() {
   }, [hasRoot, selectedChar])
 
   const header = (
-    <header className="header">
-  <div className="title">Mod Manager by Syleaf</div>
-      <div className="update-wrapper"><button onClick={() => setShowUpdatePanel(v => !v)} title="Actualizar">↻ Actualizar</button>{showUpdatePanel && (
+    <BarraSuperior
+      modsRoot={settings.modsRoot}
+      showUpdatePanel={showUpdatePanel}
+      onToggleUpdatePanel={() => setShowUpdatePanel((v) => !v)}
+      updatePanel={(
         <Actualizar
           onAfterAction={refreshAll}
           onClose={() => setShowUpdatePanel(false)}
         />
-      )}</div>
-      <div className="update-wrapper"><button onClick={() => setShowConfig(true)} title="Configuración">⚙</button></div>
-      <div className="spacer" />
-      <div className="root">
-        <span className="label">Carpeta de mods:</span>
-        <span className="path">{settings.modsRoot || 'No seleccionada'}</span>
-        <button onClick={pickRoot}>Cambiar…</button>
-      </div>
-    </header>
+      )}
+      onOpenConfig={() => setShowConfig(true)}
+      onPickRoot={pickRoot}
+    />
   )
 
   if (!hasRoot) {
@@ -389,153 +337,48 @@ function Principal() {
   return (
     <div className="layout layout-2">
       {header}
-      {/* Subencabezados separados (no dentro de los scrollers) */}
-      <div className="panel-header subheader-left">
-        <h2>Personajes</h2>
-        <div className="spacer" />
-        <button onClick={() => setShowAgregar(true)} title="Agregar personaje">+ Agregar</button>
-        <button onClick={() => setShowEditar(true)} title="Editar personaje">✎ Editar</button>
-        <button className="danger" onClick={() => setShowEliminar(true)} title="Eliminar personaje" disabled={!selectedChar}>✖ Eliminar</button>
-        {/* Character enable/disable removed */}
-      </div>
-      <div className="panel-header subheader-right">
-        <h3>Mods</h3>
-        <div className="spacer" />
-  <button onClick={addMod} disabled={!selectedChar}>+ Agregar Mod (ZIP/7z/RAR)</button>
-      </div>
 
-      {/* Izquierda: Personajes */}
-      <main className="characters-panel">
-        <div className="characters-grid">
-          {characters.map((c) => (
-            <div
-              key={c.name}
-              className={`char-card ${c.name === selectedChar ? 'active' : ''}`}
-              onClick={() => setSelectedChar(c.name)}
-            >
-              {charImgSrcs[c.name] ? (
-                (() => {
-                  const crop = charCrops[c.name]
-                  const baseStyle: any = { width: 'var(--char-thumb-width)', height: 'var(--char-thumb-height)', borderRadius: 0, overflow: 'visible', backgroundColor: '#0e1320' }
-                  if (crop && crop.originalWidth > 0 && crop.originalHeight > 0 && crop.width > 0 && crop.height > 0) {
-                    const varW = getComputedStyle(document.documentElement).getPropertyValue('--char-thumb-width')
-                    const varH = getComputedStyle(document.documentElement).getPropertyValue('--char-thumb-height')
-                    const containerW = parseFloat(varW) || 180
-                    const containerH = parseFloat(varH) || 135
-                    // scale so that the crop area fits exactly the container (keep decimals for precision)
-                    const scaleX = containerW / crop.width
-                    const scaleY = containerH / crop.height
-                    const scale = Math.max(scaleX, scaleY) || 1
-                    const bgW = crop.originalWidth * scale
-                    const bgH = crop.originalHeight * scale
-                    // center-based positioning: align crop center to container center
-                    const cx = crop.x + crop.width / 2
-                    const cy = crop.y + crop.height / 2
-                    const posX = containerW / 2 - (cx * scale)
-                    const posY = containerH / 2 - (cy * scale)
-                    return (
-                      <div
-                        className="char-thumb"
-                        style={{
-                          ...baseStyle,
-                          backgroundImage: `url(${charImgSrcs[c.name]})`,
-                          backgroundRepeat: 'no-repeat',
-                          backgroundSize: `${bgW}px ${bgH}px`,
-                          backgroundPosition: `${posX}px ${posY}px`,
-                        }}
-                      />
-                    )
-                  }
-                  // Fallback: centered cover
-                  return (
-                    <div
-                      className="char-thumb"
-                      style={{
-                        ...baseStyle,
-                        backgroundImage: `url(${charImgSrcs[c.name]})`,
-                        backgroundRepeat: 'no-repeat',
-                        backgroundSize: 'cover',
-                        backgroundPosition: '50% 50%'
-                      }}
-                    />
-                  )
-                })()
-              ) : (
-                <div className="char-avatar">{c.name.charAt(0).toUpperCase()}</div>
-              )}
-              <div className="char-name">{c.name}</div>
-            </div>
-          ))}
-          {characters.length === 0 && (
-            <div className="empty-hint">No hay personajes. Crea carpetas dentro de la raíz para cada personaje.</div>
-          )}
-        </div>
-      </main>
+      <PersonajesPanel
+        characters={characters}
+        selectedChar={selectedChar}
+        onSelectChar={(name) => setSelectedChar(name)}
+        charImgSrcs={charImgSrcs}
+        charCrops={charCrops}
+        onAdd={() => setShowAgregar(true)}
+        onEdit={() => setShowEditar(true)}
+        onDelete={() => setShowEliminar(true)}
+      />
 
-      {/* Derecha: Mods del personaje seleccionado */}
-      <section className="mods-panel" ref={modsPanelRef as any}>
-        {!selectedChar && <div className="empty-hint">Selecciona un personaje a la izquierda.</div>}
-        {selectedChar && (
-          <div style={{ width: '100%', height: '100%' }}>
-            {isLoadingMods && mods.length === 0 && (
-              <div className="loading-state">
-                <div className="spinner" />
-                <div>Cargando mods…</div>
-              </div>
-            )}
-            {mods.length > 0 && (
-              <List
-                height={modsPanelDims.height}
-                width={modsPanelDims.width}
-                itemCount={mods.length}
-                itemSize={320}
-                outerElementType={OuterContainer}
-                className="mods-virtual-scroll"
-              >
-                {({ index, style }: { index: number; style: CSSProperties }) => {
-                  const m = mods[index]
-                  const key = m.dir + '::' + m.folder
-                  const src = modImgSrcs[key]
-                  const url = modPageUrls[key]
-                  return (
-                        <div style={{ ...style, padding: '0 0 0 0', display: 'flex', justifyContent: 'flex-start' }} key={m.folder}>
-                      <div className="mod-card">
-                        <div className="mod-thumb" onClick={() => { if (src) { setPreviewSrc(src); setShowPreview(true) } }}>
-                          {src ? (
-                            <div style={{ width: '100%', height: '100%', backgroundImage: `url(${src})`, backgroundRepeat: 'no-repeat', backgroundSize: 'cover', backgroundPosition: '50% 50%' }} />
-                          ) : (
-                            <div className="placeholder">Sin imagen</div>
-                          )}
-                        </div>
-                        <div className="mod-info">
-                          <div className="mod-name">{modInternalNames[key] || m.meta.name || m.folder}</div>
-                          <div className="muted" title={m.folder}>{m.folder}</div>
-                          {url ? (
-                            <a href="#" onClick={(e) => { e.preventDefault(); window.api.openModPage(selectedChar, m.folder) }} title={url}>
-                              {url}
-                            </a>
-                          ) : <div className="muted">Sin URL</div>}
-                        </div>
-                        <div className="mod-actions">
-                          <button onClick={() => editMeta(m)}>Editar</button>
-                          <button onClick={() => window.api.openFolder(selectedChar, m.folder)}>Carpeta</button>
-                          {m.meta.enabled ? (
-                            <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.disableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Desactivar</button>
-                          ) : (
-                            <button onClick={async () => { cacheRef.current.delete(selectedChar); await window.api.enableMod(selectedChar, m.folder); await refreshMods(selectedChar) }}>Activar</button>
-                          )}
-                          <button className="danger" onClick={() => removeMod(m)}>Eliminar</button>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                }}
-              </List>
-            )}
-            {!isLoadingMods && mods.length === 0 && <div className="empty-hint">No hay mods para este personaje todavía.</div>}
-          </div>
-        )}
-      </section>
+      <ModsPanel
+        selectedChar={selectedChar}
+        mods={mods}
+        isLoadingMods={isLoadingMods}
+        modImgSrcs={modImgSrcs}
+        modInternalNames={modInternalNames}
+        modPageUrls={modPageUrls}
+        onAddMod={addMod}
+        onEditMeta={editMeta}
+        onOpenFolder={(m) => {
+          if (!selectedChar) return
+          window.api.openFolder(selectedChar, m.folder)
+        }}
+        onToggleEnabled={async (m) => {
+          if (!selectedChar) return
+          cacheRef.current.delete(selectedChar)
+          if (m.meta.enabled) await window.api.disableMod(selectedChar, m.folder)
+          else await window.api.enableMod(selectedChar, m.folder)
+          await refreshMods(selectedChar)
+        }}
+        onRemoveMod={removeMod}
+        onOpenModPage={(m) => {
+          if (!selectedChar) return
+          window.api.openModPage(selectedChar, m.folder)
+        }}
+        onPreview={(src) => {
+          setPreviewSrc(src)
+          setShowPreview(true)
+        }}
+      />
 
       {showConfig && (
         <Configuracion
@@ -603,7 +446,7 @@ function Principal() {
       {showEditarMod && selectedChar && modToEdit && (
         <EditarMod
           character={selectedChar}
-          mod={modToEdit}
+          mod={modToEdit as any}
           onClose={() => { setShowEditarMod(false); setModToEdit(null) }}
           onSaved={async () => {
             cacheRef.current.delete(selectedChar)
@@ -647,4 +490,4 @@ function debounce<T extends (...args: any[]) => void>(fn: T, wait = 400) {
   }
 }
 
-export default Principal
+export default App

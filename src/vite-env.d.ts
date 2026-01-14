@@ -1,28 +1,6 @@
 /// <reference types="vite/client" />
 
-interface ModMeta {
-	name: string
-	version?: string
-	author?: string
-	description?: string
-	pageUrl?: string
-	updateUrl?: string
-	image?: string
-	enabled?: boolean
-	createdAt?: string
-	updatedAt?: string
-}
-
-interface ModItem {
-	folder: string
-	dir: string
-	meta: ModMeta
-}
-
-interface CharacterItem {
-	name: string
-	imagePath?: string
-}
+import type { CharacterItem, ModItem, ModMeta } from './types'
 
 declare global {
 	interface Window {
