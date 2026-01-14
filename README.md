@@ -50,4 +50,5 @@ npm run build
 Notas:
 - La UI recorta/encuadra imágenes visualmente; no modifica el archivo original.
 - Se usa un watcher para refrescar la UI cuando cambian archivos.
+- IMPORTANTE: Puede que haya bug o lag visuales al generar varios personajes o cargar varios mods
 
