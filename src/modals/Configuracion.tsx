@@ -34,14 +34,6 @@ export default function Configuracion({ onSettingsChanged, onClose }: Props) {
     onSettingsChanged?.(newSettings)
   }
 
-  async function changeImagesRoot() {
-    const folder = await window.api.selectFolder()
-    if (!folder) return
-    const newSettings = await window.api.setImagesRoot(folder)
-    setSettings(newSettings)
-    onSettingsChanged?.(newSettings)
-  }
-
   return (
     <div className="overlay">
       <div className="modal">
@@ -57,8 +49,8 @@ export default function Configuracion({ onSettingsChanged, onClose }: Props) {
           </div>
           <div className="field-row">
             <div className="label">Carpeta DataBase</div>
-            <div className="path">{settings.imagesRoot || 'No seleccionada'}</div>
-            <button onClick={changeImagesRoot}>Cambiar…</button>
+            <div className="path">{settings.imagesRoot || 'AppData (automática)'}</div>
+            <button onClick={() => window.api.openDatabaseFolder()} title="Abrir carpeta de DataBase en AppData">Ver</button>
           </div>
           <hr />
           <div className="made-by">Hecho por Syleaf</div>

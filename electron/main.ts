@@ -8,6 +8,7 @@ import os from 'node:os'
 import https from 'node:https'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 
 const require = createRequire(import.meta.url)
 // Lazy require for CJS packages (after createRequire defined)
@@ -145,26 +146,146 @@ ipcMain.on('renderer:ready', () => {
 })
 
 // --------------------------- Helpers ---------------------------
-const userDataDir = () => app.getPath('userData')
+const userDataDir = () => path.join(app.getPath('appData'), 'Mod Manager Syleaf')
 const settingsPath = () => path.join(userDataDir(), 'settings.json')
+const defaultImagesRoot = () => path.join(userDataDir(), 'database')
 
 type Settings = {
   modsRoot?: string
   imagesRoot?: string
+  modsRootConfirmed?: boolean
+}
+
+async function migrateImagesRootIfNeeded(oldRoot: string, newRoot: string) {
+  if (!oldRoot || oldRoot === newRoot) return
+  try {
+    const st = await fsp.stat(oldRoot)
+    if (!st.isDirectory()) return
+  } catch {
+    return
+  }
+  try {
+    await fsp.mkdir(newRoot, { recursive: true })
+    // Legacy layout support: .../database/images -> .../database
+    const oldNorm = path.resolve(oldRoot).toLowerCase()
+    const newNorm = path.resolve(newRoot).toLowerCase()
+    const oldBase = path.basename(oldRoot).toLowerCase()
+    const oldParentNorm = path.resolve(path.dirname(oldRoot)).toLowerCase()
+    if (oldBase === 'images' && oldParentNorm === newNorm) {
+      const entries = await fsp.readdir(oldRoot)
+      for (const name of entries) {
+        const from = path.join(oldRoot, name)
+        const to = path.join(newRoot, name)
+        try { await fsp.access(to); continue } catch {}
+        await fsp.rename(from, to)
+      }
+      try { await fsp.rmdir(oldRoot) } catch {}
+      return
+    }
+    const existing = await fsp.readdir(newRoot)
+    if (existing.length > 0) return
+    if (oldNorm !== newNorm) {
+      await fsp.cp(oldRoot, newRoot, { recursive: true, force: false })
+    }
+  } catch {
+    // best-effort migration only
+  }
 }
 
 async function readSettings(): Promise<Settings> {
   try {
     const buf = await fsp.readFile(settingsPath(), 'utf-8')
-    return JSON.parse(buf)
+    const parsed = JSON.parse(buf) as Settings
+    const desiredImagesRoot = defaultImagesRoot()
+    if (parsed.imagesRoot && parsed.imagesRoot !== desiredImagesRoot) {
+      await migrateImagesRootIfNeeded(parsed.imagesRoot, desiredImagesRoot)
+    }
+
+    const normalized: Settings = {
+      ...parsed,
+      imagesRoot: desiredImagesRoot,
+    }
+
+    // Installed app must confirm mods folder at least once.
+    if (app.isPackaged && normalized.modsRoot && !normalized.modsRootConfirmed) {
+      normalized.modsRoot = undefined
+    }
+
+    const changed =
+      parsed.imagesRoot !== normalized.imagesRoot ||
+      parsed.modsRoot !== normalized.modsRoot ||
+      parsed.modsRootConfirmed !== normalized.modsRootConfirmed
+
+    if (changed) await writeSettings(normalized)
+    return normalized
   } catch {
-    return {}
+    return { imagesRoot: defaultImagesRoot() }
   }
 }
 
 async function writeSettings(s: Settings) {
   await fsp.mkdir(userDataDir(), { recursive: true })
   await fsp.writeFile(settingsPath(), JSON.stringify(s, null, 2), 'utf-8')
+}
+
+// Persistent cache for mod data to reduce re-extraction (hash invalidates on modsRoot change)
+type CacheEntry = {
+  character: string
+  modsRootHash: string
+  mods: any[]
+  modData: Record<string, { pageUrl?: string; imageUrl?: string }>
+  modInternalNames: Record<string, string>
+  timestamp: number
+}
+
+const cacheFilePath = () => path.join(userDataDir(), 'cache.json')
+
+async function readCacheFile(): Promise<Record<string, CacheEntry>> {
+  try {
+    const buf = await fsp.readFile(cacheFilePath(), 'utf-8')
+    return JSON.parse(buf) || {}
+  } catch {
+    return {}
+  }
+}
+
+async function writeCacheFile(cache: Record<string, CacheEntry>) {
+  try {
+    await fsp.mkdir(userDataDir(), { recursive: true })
+    await fsp.writeFile(cacheFilePath(), JSON.stringify(cache, null, 2), 'utf-8')
+  } catch {}
+}
+
+function hashModsRoot(modsRoot: string): string {
+  // Robust hash using SHA256 to detect if modsRoot changed
+  // Normalized path ensures case-insensitive matching on Windows
+  const normalized = path.normalize(modsRoot).toLowerCase()
+  return crypto.createHash('sha256').update(normalized).digest('hex').substring(0, 12)
+}
+
+async function getCachedMods(character: string, modsRoot?: string): Promise<CacheEntry | null> {
+  if (!modsRoot) return null
+  const cache = await readCacheFile()
+  const entry = cache[character]
+  const hash = hashModsRoot(modsRoot)
+  // Invalidate if modsRoot differs or cache is older than 30 min
+  if (entry && entry.modsRootHash === hash && Date.now() - entry.timestamp < 30 * 60 * 1000) {
+    return entry
+  }
+  return null
+}
+
+async function setCachedMods(character: string, modsRoot: string, mods: any[], modData: any, modInternalNames: any) {
+  const cache = await readCacheFile()
+  cache[character] = {
+    character,
+    modsRootHash: hashModsRoot(modsRoot),
+    mods,
+    modData,
+    modInternalNames,
+    timestamp: Date.now(),
+  }
+  await writeCacheFile(cache)
 }
 
 function ensureDirSync(p: string) {
@@ -763,17 +884,25 @@ ipcMain.handle('settings:get', async () => {
 
 ipcMain.handle('settings:setModsRoot', async (_e, root: string) => {
   const s = await readSettings()
+  const wasConfirmed = !!s.modsRootConfirmed
+  if (!wasConfirmed) {
+    // First confirmed setup for packaged app: start with a clean local database/cache.
+    try { await fsp.rm(defaultImagesRoot(), { recursive: true, force: true }) } catch {}
+    try { await fsp.unlink(cacheFilePath()) } catch {}
+  }
   s.modsRoot = root
+  s.modsRootConfirmed = true
   await writeSettings(s)
   setupWatcher(root)
   return s
 })
 
-ipcMain.handle('settings:setImagesRoot', async (_e, root: string) => {
+ipcMain.handle('settings:openDatabaseFolder', async () => {
   const s = await readSettings()
-  s.imagesRoot = root
-  await writeSettings(s)
-  return s
+  const dir = s.imagesRoot || defaultImagesRoot()
+  await fsp.mkdir(dir, { recursive: true })
+  await shell.openPath(dir)
+  return true
 })
 
 ipcMain.handle('dialog:selectFolder', async () => {
@@ -956,6 +1085,29 @@ ipcMain.handle('mods:list', async (_e, character: string) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) return []
   const cdir = characterDir(modsRoot, character)
+  
+  // Helper to calculate directory size recursively
+  async function getDirSize(dir: string): Promise<number> {
+    try {
+      const entries = await fsp.readdir(dir)
+      let total = 0
+      for (const entry of entries) {
+        const full = path.join(dir, entry)
+        try {
+          const stat = await fsp.stat(full)
+          if (stat.isDirectory()) {
+            total += await getDirSize(full)
+          } else {
+            total += stat.size
+          }
+        } catch {}
+      }
+      return total
+    } catch {
+      return 0
+    }
+  }
+  
   try {
     const entries = await fsp.readdir(cdir)
     const mods: any[] = []
@@ -970,7 +1122,23 @@ ipcMain.handle('mods:list', async (_e, character: string) => {
       const img = meta.image && fs.existsSync(path.join(mdir, meta.image)) ? meta.image : imgCandidates.find((f) => fs.existsSync(path.join(mdir, f)))
       // New rule: folder name prefixed with DISABLED_ marks it disabled; we ignore inner archive naming now
       const enabled = !/^DISABLED_/i.test(entry)
-      mods.push({ folder: entry, dir: mdir, meta: { ...meta, image: img, enabled }, archive: null })
+      
+      // Get size and modified time
+      let size = 0, timestamp = Date.now()
+      try {
+        size = await getDirSize(mdir)
+        const stat = await fsp.stat(mdir)
+        timestamp = stat.mtimeMs || Date.now()
+      } catch {}
+      
+      mods.push({ 
+        folder: entry, 
+        dir: mdir, 
+        meta: { ...meta, image: img, enabled }, 
+        archive: null,
+        size,
+        timestamp 
+      })
       seen.add(entry.replace(/^DISABLED_/i, '').toLowerCase())
     }
     // 2. New flat archives directly inside the character directory (no per-mod folder)
@@ -983,12 +1151,24 @@ ipcMain.handle('mods:list', async (_e, character: string) => {
       if (seen.has(cleanName.toLowerCase())) continue
       // Preview is embedded inside the archive; do not set meta.image here
       const imgFile = null
+      
+      // Get size and modified time
+      let size = 0, timestamp = Date.now()
+      try {
+        const stat = await fsp.stat(full)
+        size = stat.size
+        timestamp = stat.mtimeMs || Date.now()
+      } catch {}
+      
       mods.push({
         folder: cleanName,
         dir: cdir, // character directory as base
         meta: { name: cleanName, enabled: !isDisabled, image: imgFile || undefined },
         archive: entry,
+        archivePath: full,
         flat: true,
+        size,
+        timestamp,
       })
     }
     return mods
@@ -1223,6 +1403,64 @@ ipcMain.handle('mods:copyArchiveToModFolder', async (_e, character: string, arch
   return { modName, dir: cdir }
 })
 
+// Install mod from file path (used by Drag & Drop and file dialog)
+ipcMain.handle('mods:installFromFile', async (_e, character: string, filePath: string) => {
+  const { modsRoot } = await readSettings()
+  if (!modsRoot) throw new Error('Mods root not set')
+  if (!character?.trim()) throw new Error('Character required')
+  if (!filePath) throw new Error('File path required')
+  
+  // Validate file exists and is readable
+  try {
+    await fsp.access(filePath, fs.constants.R_OK)
+  } catch {
+    throw new Error('File not accessible: ' + filePath)
+  }
+  
+  // Validate extension
+  if (!/\.(zip|7z|rar)$/i.test(filePath)) {
+    throw new Error('Only ZIP, 7z, or RAR files allowed')
+  }
+  
+  // Extract archive to new mod folder
+  const originalName = path.basename(filePath)
+  const base = originalName.replace(/\.(zip|7z|rar)$/i, '')
+  const cdir = characterDir(modsRoot, character)
+  await fsp.mkdir(cdir, { recursive: true })
+  
+  // Generate unique name to avoid collisions
+  let modName = base
+  let i = 2
+  while (true) {
+    const collisionArchive = ['.zip', '.7z', '.rar'].some((ext) => fs.existsSync(path.join(cdir, `${modName}${ext}`)) || fs.existsSync(path.join(cdir, `DISABLED_${modName}${ext}`)))
+    const collisionFolder = fs.existsSync(path.join(cdir, modName))
+    if (!collisionArchive && !collisionFolder) break
+    modName = `${base} (${i++})`
+  }
+  
+  const destDir = path.join(cdir, modName)
+  await fsp.mkdir(destDir, { recursive: true })
+  await extractArchive(filePath, destDir)
+  
+  // Flatten if single top-level folder
+  try {
+    const ents = await fsp.readdir(destDir, { withFileTypes: true })
+    const fileCount = ents.filter(e => e.isFile()).length
+    const dirEntries = ents.filter(e => e.isDirectory())
+    if (fileCount === 0 && dirEntries.length === 1) {
+      const inner = path.join(destDir, dirEntries[0].name)
+      const innerItems = await fsp.readdir(inner)
+      for (const name of innerItems) {
+        await fsp.rename(path.join(inner, name), path.join(destDir, name))
+      }
+      try { await fsp.rmdir(inner) } catch {}
+    }
+  } catch {}
+  
+  try { await writeModMeta(destDir, { name: modName, enabled: true }) } catch {}
+  return { modName, dir: cdir }
+})
+
 ipcMain.handle('mods:saveImageFromDataUrl', async (_e, character: string, modName: string, dataUrl: string) => {
   const { modsRoot } = await readSettings()
   if (!modsRoot) throw new Error('Mods root not set')
@@ -1446,4 +1684,26 @@ ipcMain.handle('fs:deleteFile', async (_e, absPath: string) => {
   } catch {
     return false
   }
+})
+
+// Cache handlers: store/retrieve mod data to avoid re-extracting
+ipcMain.handle('cache:getMods', async (_e, character: string) => {
+  const s = await readSettings()
+  const cached = await getCachedMods(character, s.modsRoot)
+  return cached || null
+})
+
+ipcMain.handle('cache:setMods', async (_e, character: string, mods: any[], modData: any, modInternalNames: any) => {
+  const s = await readSettings()
+  if (s.modsRoot) {
+    await setCachedMods(character, s.modsRoot, mods, modData, modInternalNames)
+  }
+  return true
+})
+
+ipcMain.handle('cache:clear', async () => {
+  try {
+    await fsp.unlink(cacheFilePath())
+  } catch {}
+  return true
 })

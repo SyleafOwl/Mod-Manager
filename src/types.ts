@@ -16,6 +16,9 @@ export type ModItem = {
   dir: string
   meta: ModMeta
   archive?: string | null
+  size?: number          // Size in bytes
+  timestamp?: number     // Unix timestamp (modified time)
+  archivePath?: string   // Path to archive file if flat
 }
 
 export type CharacterItem = { name: string; imagePath?: string }

@@ -7,7 +7,7 @@ declare global {
 		api: {
 			getSettings(): Promise<{ modsRoot?: string; imagesRoot?: string }>
 			setModsRoot(root: string): Promise<{ modsRoot?: string; imagesRoot?: string }>
-			setImagesRoot(root: string): Promise<{ modsRoot?: string; imagesRoot?: string }>
+			openDatabaseFolder(): Promise<boolean>
 			selectFolder(): Promise<string | null>
 			selectArchive(): Promise<string | null>
 
@@ -21,6 +21,7 @@ declare global {
 			listMods(character: string): Promise<ModItem[]>
 			addModFromArchive(character: string, archivePath: string, modName: string, meta?: Partial<ModMeta>): Promise<boolean>
 			copyArchiveToModFolder(character: string, archivePath: string): Promise<{ modName: string; fileName?: string; dir: string }>
+			installFromFile(character: string, filePath: string): Promise<{ modName: string; dir: string }>
 			createModFromArchive(character: string, archivePath: string): Promise<{ modName: string; dir: string }>
 			saveModMetadata(character: string, modName: string, meta: Partial<ModMeta>): Promise<ModMeta>
 			saveModImageFromDataUrl(character: string, modName: string, dataUrl: string): Promise<string>
@@ -44,6 +45,9 @@ declare global {
 			saveImageFromDataUrl(character: string, dataUrl: string, sourceUrl?: string, crop?: any): Promise<string>
 			getCharacterInfo(character: string): Promise<{ imagePath: string | null; url: string | null; crop?: any }>
 			deleteFile(absPath: string): Promise<boolean>
+			getCachedMods(character: string): Promise<{ character: string; mods: ModItem[]; modInternalNames: Record<string, string>; timestamp: number } | null>
+			setCachedMods(character: string, mods: ModItem[], modData: any, modInternalNames: Record<string, string>): Promise<boolean>
+			clearCache(): Promise<boolean>
 			notifyReady(): void
 			onFsChanged(cb: (payload: any) => void): () => void
 		}

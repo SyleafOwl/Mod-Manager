@@ -5,8 +5,8 @@
   "asar": true,
   "productName": "Mod Manager by Syleaf",
   "directories": {
-    // Export builds to the user's Desktop
-    "output": "${env.USERPROFILE}/Desktop/ModManager-${version}"
+    // Keep artifacts inside the project folder for predictable output paths
+    "output": "release/${version}"
   },
   "files": [
     "dist",
@@ -33,6 +33,9 @@
     "oneClick": false,
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Mod Manager by Syleaf",
     "deleteAppDataOnUninstall": false
   },
   "linux": {

@@ -2,6 +2,8 @@
   "name": "syleaf-mod-manager",
   "private": true,
   "version": "0.0.0",
+  "description": "Administrador de mods por personaje para juegos, hecho con Electron + React.",
+  "author": "Syleaf",
   "type": "module",
   "scripts": {
     "dev": "vite",

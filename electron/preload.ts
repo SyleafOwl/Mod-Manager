@@ -4,7 +4,7 @@ import { ipcRenderer, contextBridge } from 'electron'
 contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setModsRoot: (root: string) => ipcRenderer.invoke('settings:setModsRoot', root),
-  setImagesRoot: (root: string) => ipcRenderer.invoke('settings:setImagesRoot', root),
+  openDatabaseFolder: () => ipcRenderer.invoke('settings:openDatabaseFolder'),
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
   selectArchive: () => ipcRenderer.invoke('dialog:selectArchive'),
 
@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   listMods: (character: string) => ipcRenderer.invoke('mods:list', character),
   addModFromArchive: (character: string, archivePath: string, modName: string, meta?: any) => ipcRenderer.invoke('mods:addFromArchive', character, archivePath, modName, meta),
   copyArchiveToModFolder: (character: string, archivePath: string) => ipcRenderer.invoke('mods:copyArchiveToModFolder', character, archivePath),
+  installFromFile: (character: string, filePath: string) => ipcRenderer.invoke('mods:installFromFile', character, filePath),
   createModFromArchive: (character: string, archivePath: string) => ipcRenderer.invoke('mods:copyArchiveToModFolder', character, archivePath),
   saveModMetadata: (character: string, modName: string, meta: any) => ipcRenderer.invoke('mods:saveMetadata', character, modName, meta),
   saveModImageFromDataUrl: (character: string, modName: string, dataUrl: string) => ipcRenderer.invoke('mods:saveImageFromDataUrl', character, modName, dataUrl),
@@ -41,6 +42,10 @@ contextBridge.exposeInMainWorld('api', {
   saveImageFromDataUrl: (character: string, dataUrl: string, sourceUrl?: string, crop?: any) => ipcRenderer.invoke('images:saveFromDataUrl', character, dataUrl, sourceUrl, crop),
   getCharacterInfo: (character: string) => ipcRenderer.invoke('database:getCharacterInfo', character),
   deleteFile: (absPath: string) => ipcRenderer.invoke('fs:deleteFile', absPath),
+  // Cache handlers for persistent mod data
+  getCachedMods: (character: string) => ipcRenderer.invoke('cache:getMods', character),
+  setCachedMods: (character: string, mods: any[], modData: any, modInternalNames: any) => ipcRenderer.invoke('cache:setMods', character, mods, modData, modInternalNames),
+  clearCache: () => ipcRenderer.invoke('cache:clear'),
   // Notify main that the renderer finished initial loading
   notifyReady: () => ipcRenderer.send('renderer:ready'),
   onFsChanged: (cb: (payload: any) => void) => {

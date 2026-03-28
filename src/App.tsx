@@ -36,7 +36,6 @@ function App() {
   const [showEditarMod, setShowEditarMod] = useState(false)
   const [modToEdit, setModToEdit] = useState<ModItem | null>(null)
   const [modToDelete, setModToDelete] = useState<string>('')
-  const [pendingMod, setPendingMod] = useState<{ archivePath: string; archiveFileName: string } | null>(null)
   const [previewSrc, setPreviewSrc] = useState<string>('')
   const [showPreview, setShowPreview] = useState(false)
   const readyRef = useRef(false)
@@ -68,6 +67,8 @@ function App() {
 
   function writeCache(charName: string, entry: Omit<CacheEntry, 'ts'>) {
     cacheRef.current.set(charName, { ...entry, ts: Date.now() })
+    // Also persist to main process (survives app restart)
+    window.api.setCachedMods(charName, entry.mods, {}, entry.modInternalNames).catch(() => {})
     // Enforce simple LRU by timestamp
     if (cacheRef.current.size > MAX_CACHE) {
       let oldestKey: string | null = null
@@ -90,6 +91,12 @@ function App() {
 
   useEffect(() => {
     if (!selectedChar || !hasRoot) return
+    
+    // Debounce: wait 300ms before loading to avoid multiple rapid loads
+    if (charChangeTimeoutRef.current) {
+      clearTimeout(charChangeTimeoutRef.current)
+    }
+    
     // If we have cache for this character, hydrate immediately to avoid blank flicker
     const hadCache = applyCache(selectedChar)
     if (!hadCache) {
@@ -100,11 +107,18 @@ function App() {
       setModPageUrls({})
       setIsLoadingMods(true)
     }
+    
     // Guard against race conditions: capture a load identifier
     const loadId = Date.now()
-    ;(async () => {
+    charChangeTimeoutRef.current = setTimeout(async () => {
       await refreshMods(selectedChar, loadId)
-    })()
+    }, 300)
+    
+    return () => {
+      if (charChangeTimeoutRef.current) {
+        clearTimeout(charChangeTimeoutRef.current)
+      }
+    }
   }, [selectedChar, hasRoot])
 
   async function refreshCharacters() {
@@ -138,8 +152,60 @@ function App() {
   }
 
   const latestLoadRef = useRef<number>(0)
-  async function refreshMods(characterFolder: string, loadId?: number) {
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const charChangeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  
+  async function refreshMods(characterFolder: string, loadId?: number, forceFresh = false) {
+    // Cancel previous load if still in progress
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+    
     if (loadId) latestLoadRef.current = loadId
+    
+    // Try to load from persistent cache first (faster), unless a fresh scan was requested
+    const cachedEntry = forceFresh ? null : await window.api.getCachedMods(characterFolder)
+    if (!forceFresh && cachedEntry && cachedEntry.mods && cachedEntry.mods.length > 0) {
+      if (loadId && loadId !== latestLoadRef.current) return
+      // Use cached mod list instantly
+      const list = cachedEntry.mods
+      setMods(list)
+      setModInternalNames(cachedEntry.modInternalNames)
+      setIsLoadingMods(false)
+      // Reload images in background without blocking UI
+      setTimeout(async () => {
+        if (loadId && loadId !== latestLoadRef.current) return
+        const imgMap: Record<string, string> = {}
+        const urlsMap: Record<string, string> = {}
+        for (const m of list) {
+          const key = m.dir + '::' + m.folder
+          try {
+            let src = ''
+            if (!m.meta.image) {
+              src = (await window.api.getModPreviewDataUrl(characterFolder, m.folder)) || ''
+            } else {
+              const abs = `${m.dir.replace(/\\\\/g, '/')}/${m.meta.image}`
+              src = (await window.api.readImageAsDataUrl(abs)) || ''
+            }
+            if (src) imgMap[key] = src
+          } catch {}
+          try {
+            const d = await window.api.getModData(characterFolder, m.folder)
+            if (d?.pageUrl) urlsMap[key] = d.pageUrl
+          } catch {}
+        }
+        if (loadId && loadId !== latestLoadRef.current) return
+        setModImgSrcs((prev) => ({ ...prev, ...imgMap }))
+        setModPageUrls((prev) => ({ ...prev, ...urlsMap }))
+      }, 100)
+      if (!readyRef.current) {
+        try { window.api.notifyReady() } catch {}
+        readyRef.current = true
+      }
+      return
+    }
+    
     const list = await window.api.listMods(characterFolder)
     // If another load started after this one, abort applying results
     if (loadId && loadId !== latestLoadRef.current) return
@@ -266,7 +332,7 @@ function App() {
     const names = chars.map(c => c.name)
     if (!cur || !names.includes(cur)) cur = names[0] || ''
     setSelectedChar(cur)
-    if (cur) await refreshMods(cur)
+    if (cur) await refreshMods(cur, undefined, true)
     else { setMods([]); setModImgSrcs({}) }
   }
 
@@ -281,10 +347,6 @@ function App() {
 
   async function addMod() {
     if (!selectedChar) return
-    const archive = await window.api.selectArchive()
-    if (!archive) return
-    // Copy archive into a new mod folder named after archive
-    setPendingMod({ archivePath: archive, archiveFileName: archive.split(/[/\\]/).pop() || 'mod.zip' })
     setShowAgregarMod(true)
   }
 
@@ -324,11 +386,11 @@ function App() {
 
   if (!hasRoot) {
     return (
-      <div className="empty">
-        {header}
-        <main className="center">
-          <p>Selecciona una carpeta raíz donde cada subcarpeta será un personaje.</p>
-          <button onClick={pickRoot}>Elegir carpeta…</button>
+      <div className="empty" style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+        <main className="center" style={{ width: 'min(520px, 92vw)', textAlign: 'center' }}>
+          <h2 style={{ margin: '0 0 12px 0' }}>Carpeta de Mods</h2>
+          <p>Selecciona la carpeta donde guardas tus mods para empezar.</p>
+          <button onClick={pickRoot}>Elegir</button>
         </main>
       </div>
     )
@@ -367,7 +429,7 @@ function App() {
           cacheRef.current.delete(selectedChar)
           if (m.meta.enabled) await window.api.disableMod(selectedChar, m.folder)
           else await window.api.enableMod(selectedChar, m.folder)
-          await refreshMods(selectedChar)
+          await refreshMods(selectedChar, undefined, true)
         }}
         onRemoveMod={removeMod}
         onOpenModPage={(m) => {
@@ -377,6 +439,11 @@ function App() {
         onPreview={(src) => {
           setPreviewSrc(src)
           setShowPreview(true)
+        }}
+        onInstalledMod={async () => {
+          if (!selectedChar) return
+          cacheRef.current.delete(selectedChar)
+          await refreshMods(selectedChar, undefined, true)
         }}
       />
 
@@ -419,16 +486,14 @@ function App() {
           }}
         />
       )}
-      {showAgregarMod && selectedChar && pendingMod && (
+      {showAgregarMod && selectedChar && (
         <AgregarMod
           character={selectedChar}
-          archivePath={pendingMod.archivePath}
-          archiveFileName={pendingMod.archiveFileName}
-          onClose={() => { setShowAgregarMod(false); setPendingMod(null) }}
+          onClose={() => { setShowAgregarMod(false) }}
           onSaved={async () => {
             // Invalidate cache for this character and refresh
             cacheRef.current.delete(selectedChar)
-            await refreshMods(selectedChar)
+            await refreshMods(selectedChar, undefined, true)
           }}
         />
       )}
@@ -439,7 +504,7 @@ function App() {
           onClose={() => { setShowEliminarMod(false); setModToDelete('') }}
           onDeleted={async () => {
             cacheRef.current.delete(selectedChar)
-            await refreshMods(selectedChar)
+            await refreshMods(selectedChar, undefined, true)
           }}
         />
       )}
@@ -450,7 +515,7 @@ function App() {
           onClose={() => { setShowEditarMod(false); setModToEdit(null) }}
           onSaved={async () => {
             cacheRef.current.delete(selectedChar)
-            await refreshMods(selectedChar)
+            await refreshMods(selectedChar, undefined, true)
           }}
         />
       )}
